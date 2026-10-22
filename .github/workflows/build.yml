@@ -68,8 +68,8 @@ jobs:
                   applicationId = "com.example.foldlauncher"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 3
-                  versionName = "3.0"
+                  versionCode = 4
+                  versionName = "4.0"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -231,6 +231,9 @@ jobs:
           import androidx.compose.ui.graphics.graphicsLayer
           import androidx.compose.ui.hapticfeedback.HapticFeedbackType
           import androidx.compose.ui.input.pointer.pointerInput
+          import androidx.compose.ui.layout.onGloballyPositioned
+          import androidx.compose.ui.layout.positionInRoot
+          import androidx.compose.ui.zIndex
           import androidx.compose.ui.platform.LocalConfiguration
           import androidx.compose.ui.platform.LocalContext
           import androidx.compose.ui.platform.LocalDensity
@@ -240,6 +243,7 @@ jobs:
           import androidx.compose.ui.text.style.TextOverflow
           import androidx.compose.ui.unit.Dp
           import androidx.compose.ui.unit.IntOffset
+          import androidx.compose.ui.unit.IntSize
           import androidx.compose.ui.unit.dp
           import androidx.compose.ui.unit.sp
           import androidx.core.app.NotificationManagerCompat
@@ -352,10 +356,36 @@ jobs:
               val pkg: String,
               val icon: ImageBitmap,
               val folder: String,
-              val removable: Boolean
+              val removable: Boolean,
+              val installed: Long
           )
 
-          data class ScreenData(val name: String, val apps: List<String>)
+          const val COLS_N = 4
+          const val COLS_W = 8
+          const val ROWS_N_GUESS = 5
+          const val ROWS_W_GUESS = 4
+
+          // An app placed on a custom screen. Separate cells for folded (c,r) and unfolded (wc,wr) layouts.
+          data class Placed(val pkg: String, val c: Int, val r: Int, val wc: Int, val wr: Int) {
+              fun col(wide: Boolean) = if (wide) wc else c
+              fun row(wide: Boolean) = if (wide) wr else r
+              fun moved(wide: Boolean, col: Int, row: Int) =
+                  if (wide) copy(wc = col, wr = row) else copy(c = col, r = row)
+          }
+
+          data class ScreenData(val name: String, val items: List<Placed>)
+
+          fun nextFree(items: List<Placed>, wide: Boolean, columns: Int, rows: Int): Pair<Int, Int> {
+              val used = items.map { it.col(wide) to it.row(wide) }.toSet()
+              for (r in 0 until rows) {
+                  for (c in 0 until columns) {
+                      if ((c to r) !in used) return c to r
+                  }
+              }
+              return 0 to 0
+          }
+
+          data class MenuState(val app: AppItem, val anchor: Offset, val onRemove: (() -> Unit)?)
 
           data class WeatherInfo(val temp: String, val cond: String, val place: String)
 
@@ -382,8 +412,7 @@ jobs:
               val wiggle: () -> Float,
               val ring: () -> Float,
               val onLaunch: (AppItem) -> Unit,
-              val onEdit: () -> Unit,
-              val onUninstall: (AppItem) -> Unit,
+              val onMenu: (MenuState) -> Unit,
               val onRemove: ((AppItem) -> Unit)?
           )
 
@@ -435,7 +464,8 @@ jobs:
                           pkg,
                           iconCache.getOrPut(pkg) { ri.loadIcon(pm).toBitmap(192, 192).asImageBitmap() },
                           folderFor(ai, pkg),
-                          !system
+                          !system,
+                          try { pm.getPackageInfo(pkg, 0).firstInstallTime } catch (e: Exception) { 0L }
                       )
                   }
                   .sortedBy { it.label.lowercase() }
@@ -462,8 +492,27 @@ jobs:
                   val arr = JSONArray(raw)
                   (0 until arr.length()).map { i ->
                       val o = arr.getJSONObject(i)
-                      val a = o.getJSONArray("apps")
-                      ScreenData(o.getString("name"), (0 until a.length()).map { a.getString(it) })
+                      val items = ArrayList<Placed>()
+                      val ia = o.optJSONArray("items")
+                      if (ia != null) {
+                          for (k in 0 until ia.length()) {
+                              val it = ia.getJSONObject(k)
+                              items.add(
+                                  Placed(
+                                      it.getString("p"), it.getInt("c"), it.getInt("r"),
+                                      it.getInt("wc"), it.getInt("wr")
+                                  )
+                              )
+                          }
+                      } else {
+                          val legacy = o.optJSONArray("apps")
+                          if (legacy != null) {
+                              for (k in 0 until legacy.length()) {
+                                  items.add(Placed(legacy.getString(k), k % COLS_N, k / COLS_N, k % COLS_W, k / COLS_W))
+                              }
+                          }
+                      }
+                      ScreenData(o.getString("name"), items)
                   }
               } catch (e: Exception) {
                   listOf(ScreenData("Screen 1", emptyList()))
@@ -472,7 +521,15 @@ jobs:
 
           fun saveScreens(prefs: SharedPreferences, list: List<ScreenData>) {
               val arr = JSONArray()
-              list.forEach { s -> arr.put(JSONObject().put("name", s.name).put("apps", JSONArray(s.apps))) }
+              list.forEach { s ->
+                  val items = JSONArray()
+                  s.items.forEach { p ->
+                      items.put(
+                          JSONObject().put("p", p.pkg).put("c", p.c).put("r", p.r).put("wc", p.wc).put("wr", p.wr)
+                      )
+                  }
+                  arr.put(JSONObject().put("name", s.name).put("items", items))
+              }
               prefs.edit().putString("screens", arr.toString()).apply()
           }
 
@@ -568,18 +625,21 @@ jobs:
               val weather = remember { WeatherState(prefs) }
 
               val wide = LocalConfiguration.current.screenWidthDp >= 600
-              val columns = if (wide) 8 else 4
+              val columns = if (wide) COLS_W else COLS_N
               val iconSize = if (wide) 60.dp else 48.dp
 
               var editing by remember { mutableStateOf(false) }
               var openFolder by remember { mutableStateOf<String?>(null) }
               var pickerFor by remember { mutableStateOf<Int?>(null) }
               var weatherEditing by remember { mutableStateOf(false) }
+              var menu by remember { mutableStateOf<MenuState?>(null) }
+              var gridRows by remember { mutableIntStateOf(ROWS_N_GUESS) }
 
               BackHandler(editing) { editing = false }
               BackHandler(openFolder != null) { openFolder = null }
               BackHandler(pickerFor != null) { pickerFor = null }
               BackHandler(weatherEditing) { weatherEditing = false }
+              BackHandler(menu != null) { menu = null }
 
               // Shared animations (only read at draw time, so no constant recomposition).
               val inf = rememberInfiniteTransition(label = "fx")
@@ -628,6 +688,20 @@ jobs:
                   }
               }
 
+              LaunchedEffect(apps) {
+                  val pkgs = apps.map { it.pkg }.toSet()
+                  var changed = false
+                  for (i in screens.indices) {
+                      val sc = screens[i]
+                      val kept = sc.items.filter { it.pkg in pkgs }
+                      if (kept.size != sc.items.size) {
+                          screens[i] = sc.copy(items = kept)
+                          changed = true
+                      }
+                  }
+                  if (changed) saveScreens(prefs, screens)
+              }
+
               var listenerOn by remember { mutableStateOf(isListenerOn(ctx)) }
               LaunchedEffect(Unit) {
                   while (true) {
@@ -649,17 +723,17 @@ jobs:
                       prefs.edit().putInt("c_${a.pkg}", n).apply()
                       ctx.packageManager.getLaunchIntentForPackage(a.pkg)?.let { ctx.startActivity(it) }
                   },
-                  onEdit = {
+                  onMenu = { m ->
                       haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                      editing = true
-                  },
-                  onUninstall = { a ->
-                      ctx.startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:${a.pkg}")))
+                      menu = m
                   },
                   onRemove = null
               )
 
               val ranked = apps.sortedByDescending { counts[it.pkg] ?: 0 }
+              val recent = remember(apps) { apps.sortedByDescending { it.installed }.take(12) }
+              val cards = listOf("Suggestions" to ranked.take(12), "Recently Added" to recent) +
+                  FOLDERS.map { it to folders[it].orEmpty() }
               val pager = rememberPagerState { 2 + screens.size }
 
               BoxWithConstraints(
@@ -727,22 +801,47 @@ jobs:
                                   ) { weatherEditing = true }
 
                                   page <= screens.size -> {
-                                      val s = screens.getOrNull(page - 1)
-                                      if (s != null) {
+                                      val idx = page - 1
+                                      val sc = screens.getOrNull(idx)
+                                      if (sc != null) {
                                           ScreenPage(
-                                              s, apps, columns, iconSize, ui,
+                                              sc, apps, wide, columns, iconSize, ui,
+                                              onMove = { pkg, col, row ->
+                                                  if (idx in screens.indices) {
+                                                      val cur = screens[idx]
+                                                      val me = cur.items.find { it.pkg == pkg }
+                                                      if (me != null) {
+                                                          val other = cur.items.find {
+                                                              it.pkg != pkg && it.col(wide) == col && it.row(wide) == row
+                                                          }
+                                                          val oldC = me.col(wide)
+                                                          val oldR = me.row(wide)
+                                                          screens[idx] = cur.copy(
+                                                              items = cur.items.map { p ->
+                                                                  when {
+                                                                      p.pkg == pkg -> p.moved(wide, col, row)
+                                                                      other != null && p.pkg == other.pkg -> p.moved(wide, oldC, oldR)
+                                                                      else -> p
+                                                                  }
+                                                              }
+                                                          )
+                                                          saveScreens(prefs, screens)
+                                                      }
+                                                  }
+                                              },
                                               onRemoveApp = { a ->
-                                                  val i = page - 1
-                                                  if (i in screens.indices) {
-                                                      screens[i] = screens[i].copy(apps = screens[i].apps - a.pkg)
+                                                  if (idx in screens.indices) {
+                                                      screens[idx] = screens[idx].copy(
+                                                          items = screens[idx].items.filter { it.pkg != a.pkg }
+                                                      )
                                                       saveScreens(prefs, screens)
                                                   }
                                               },
-                                              onAdd = { pickerFor = page - 1 },
+                                              onRows = { gridRows = it },
+                                              onAdd = { pickerFor = idx },
                                               onDelete = {
-                                                  val i = page - 1
-                                                  if (i in screens.indices) {
-                                                      screens.removeAt(i)
+                                                  if (idx in screens.indices) {
+                                                      screens.removeAt(idx)
                                                       saveScreens(prefs, screens)
                                                   }
                                               }
@@ -750,7 +849,7 @@ jobs:
                                       }
                                   }
 
-                                  else -> FolderPage(folders, wide, ui) { openFolder = it }
+                                  else -> LibraryPage(cards, apps, wide, columns, iconSize, ui) { openFolder = it }
                               }
                           }
                           Row(
@@ -775,21 +874,30 @@ jobs:
                       SideDock(dock, if (wide) 54.dp else 42.dp, ui)
                   }
 
-                  ShadeButton(maxW, maxH, prefs)
+                  FloatingButton(maxW, maxH, prefs, "b", "🔔", false, 0)
+                  FloatingButton(maxW, maxH, prefs, "w", "🛠️", true, 1)
 
                   openFolder?.let { name ->
-                      FolderOverlay(name, folders[name].orEmpty(), wide, ui) { openFolder = null }
+                      FolderOverlay(name, cards.find { it.first == name }?.second.orEmpty(), wide, ui) {
+                          openFolder = null
+                      }
                   }
                   pickerFor?.let { idx ->
                       val s = screens.getOrNull(idx)
                       if (s != null) {
                           AppPicker(
-                              "Add to ${s.name}", apps, s.apps,
+                              "Add to ${s.name}", apps, s.items.map { it.pkg },
                               onToggle = { a ->
                                   val cur = screens[idx]
-                                  screens[idx] = cur.copy(
-                                      apps = if (a.pkg in cur.apps) cur.apps - a.pkg else cur.apps + a.pkg
-                                  )
+                                  val has = cur.items.any { it.pkg == a.pkg }
+                                  val items = if (has) {
+                                      cur.items.filter { it.pkg != a.pkg }
+                                  } else {
+                                      val n = nextFree(cur.items, false, COLS_N, if (wide) ROWS_N_GUESS else gridRows)
+                                      val w = nextFree(cur.items, true, COLS_W, if (wide) gridRows else ROWS_W_GUESS)
+                                      cur.items + Placed(a.pkg, n.first, n.second, w.first, w.second)
+                                  }
+                                  screens[idx] = cur.copy(items = items)
                                   saveScreens(prefs, screens)
                               },
                               onClose = { pickerFor = null }
@@ -798,6 +906,16 @@ jobs:
                   }
                   if (weatherEditing) {
                       WeatherEditor(weather) { weatherEditing = false }
+                  }
+                  menu?.let { m ->
+                      AppMenu(
+                          m, maxW, maxH,
+                          onDismiss = { menu = null },
+                          onEdit = { editing = true },
+                          onUninstall = { a ->
+                              ctx.startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:${a.pkg}")))
+                          }
+                      )
                   }
               }
           }
@@ -856,82 +974,184 @@ jobs:
 
           @Composable
           fun ScreenPage(
-              screen: ScreenData, apps: List<AppItem>, columns: Int, iconSize: Dp, ui: UiEnv,
-              onRemoveApp: (AppItem) -> Unit, onAdd: () -> Unit, onDelete: () -> Unit
+              screen: ScreenData, apps: List<AppItem>, wide: Boolean, columns: Int, iconSize: Dp, ui: UiEnv,
+              onMove: (String, Int, Int) -> Unit, onRemoveApp: (AppItem) -> Unit, onRows: (Int) -> Unit,
+              onAdd: () -> Unit, onDelete: () -> Unit
           ) {
-              val list = screen.apps.mapNotNull { p -> apps.find { it.pkg == p } }
               val env = ui.copy(onRemove = onRemoveApp)
               Column(Modifier.fillMaxSize()) {
                   Row(
                       Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                      verticalAlignment = Alignment.CenterVertically
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(8.dp)
                   ) {
                       SectionLabel(screen.name)
                       Spacer(Modifier.weight(1f))
-                      if (ui.editing) GlassPill("Delete screen") { onDelete() }
+                      if (ui.editing) GlassPill("Delete") { onDelete() }
+                      GlassPill("+ Apps") { onAdd() }
                   }
-                  LazyVerticalGrid(
-                      columns = GridCells.Fixed(columns),
-                      modifier = Modifier.weight(1f),
-                      contentPadding = PaddingValues(top = 6.dp),
-                      verticalArrangement = Arrangement.spacedBy(14.dp)
-                  ) {
-                      items(list, key = { it.pkg }) { app -> AppIcon(app, iconSize, env) }
-                      item {
-                          Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                              Box(
-                                  Modifier
-                                      .padding(6.dp)
-                                      .size(iconSize)
-                                      .glass(RoundedCornerShape(iconSize * 0.3f))
-                                      .clickable { onAdd() },
-                                  contentAlignment = Alignment.Center
-                              ) {
-                                  Text("+", color = NeonCyan, fontSize = 26.sp, fontWeight = FontWeight.Light)
+                  BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                      val cellW = maxWidth / columns
+                      val cellH = iconSize + 40.dp
+                      val rows = maxOf(1, (maxHeight / cellH).toInt())
+                      LaunchedEffect(rows) { onRows(rows) }
+                      if (screen.items.isEmpty()) {
+                          Text(
+                              "Tap + Apps to add apps here",
+                              color = Color.White.copy(alpha = 0.6f),
+                              fontSize = 13.sp,
+                              modifier = Modifier.align(Alignment.Center)
+                          )
+                      }
+                      screen.items.forEach { p ->
+                          val app = apps.find { it.pkg == p.pkg }
+                          if (app != null) {
+                              key(p.pkg) {
+                                  PlacedApp(app, p, wide, cellW, cellH, columns, rows, iconSize, env, onMove)
                               }
-                              Text("Add", color = Color.White.copy(alpha = 0.9f), fontSize = 11.sp)
                           }
                       }
                   }
               }
           }
 
+          // An app sitting in a cell; in edit mode it can be dragged to any other cell.
           @Composable
-          fun FolderPage(
-              folders: Map<String, List<AppItem>>, wide: Boolean, ui: UiEnv, onOpen: (String) -> Unit
+          fun PlacedApp(
+              app: AppItem, p: Placed, wide: Boolean, cellW: Dp, cellH: Dp,
+              columns: Int, rows: Int, iconSize: Dp, ui: UiEnv,
+              onMove: (String, Int, Int) -> Unit
           ) {
-              LazyVerticalGrid(
-                  columns = GridCells.Fixed(if (wide) 4 else 2),
-                  modifier = Modifier.fillMaxSize(),
-                  horizontalArrangement = Arrangement.spacedBy(12.dp),
-                  verticalArrangement = Arrangement.spacedBy(12.dp)
+              val d = LocalDensity.current
+              var dx by remember { mutableFloatStateOf(0f) }
+              var dy by remember { mutableFloatStateOf(0f) }
+              var dragging by remember { mutableStateOf(false) }
+              val col = p.col(wide).coerceIn(0, columns - 1)
+              val row = p.row(wide).coerceIn(0, rows - 1)
+              val cw = with(d) { cellW.toPx() }
+              val ch = with(d) { cellH.toPx() }
+
+              Box(
+                  Modifier
+                      .offset { IntOffset((col * cw + dx).roundToInt(), (row * ch + dy).roundToInt()) }
+                      .size(cellW, cellH)
+                      .zIndex(if (dragging) 10f else 0f)
+                      .then(
+                          if (ui.editing) {
+                              Modifier.pointerInput(p.pkg, col, row, cw, ch) {
+                                  detectDragGestures(
+                                      onDragStart = { dragging = true },
+                                      onDragEnd = {
+                                          val nc = ((col * cw + dx + cw / 2f) / cw).toInt().coerceIn(0, columns - 1)
+                                          val nr = ((row * ch + dy + ch / 2f) / ch).toInt().coerceIn(0, rows - 1)
+                                          dx = 0f
+                                          dy = 0f
+                                          dragging = false
+                                          onMove(p.pkg, nc, nr)
+                                      },
+                                      onDragCancel = {
+                                          dx = 0f
+                                          dy = 0f
+                                          dragging = false
+                                      }
+                                  ) { change, drag ->
+                                      change.consume()
+                                      dx += drag.x
+                                      dy += drag.y
+                                  }
+                              }
+                          } else Modifier
+                      ),
+                  contentAlignment = Alignment.TopCenter
               ) {
-                  items(FOLDERS) { name ->
-                      val list = folders[name].orEmpty()
-                      val active = list.any { it.pkg in ui.counts || it.pkg in ui.ringing }
-                      val total = list.sumOf { ui.counts[it.pkg] ?: 0 }
-                      Box(
-                          Modifier
-                              .height(150.dp)
-                              .glass(RoundedCornerShape(26.dp))
-                              .shineEffect(active, ui.shine)
-                              .clickable { onOpen(name) }
+                  AppIcon(app, iconSize, ui)
+              }
+          }
+
+          @Composable
+          fun LibraryPage(
+              cards: List<Pair<String, List<AppItem>>>, apps: List<AppItem>, wide: Boolean,
+              columns: Int, iconSize: Dp, ui: UiEnv, onOpen: (String) -> Unit
+          ) {
+              var query by remember { mutableStateOf("") }
+              Column(Modifier.fillMaxSize()) {
+                  Row(
+                      Modifier
+                          .fillMaxWidth()
+                          .glass(RoundedCornerShape(50))
+                          .padding(horizontal = 16.dp, vertical = 12.dp),
+                      verticalAlignment = Alignment.CenterVertically
+                  ) {
+                      Text("🔍", fontSize = 16.sp)
+                      Spacer(Modifier.width(10.dp))
+                      Box(Modifier.weight(1f)) {
+                          if (query.isEmpty()) {
+                              Text("App Library", color = Color.White.copy(alpha = 0.6f), fontSize = 17.sp)
+                          }
+                          BasicTextField(
+                              value = query,
+                              onValueChange = { query = it },
+                              singleLine = true,
+                              textStyle = TextStyle(color = Color.White, fontSize = 17.sp),
+                              cursorBrush = SolidColor(NeonCyan),
+                              modifier = Modifier.fillMaxWidth()
+                          )
+                      }
+                      if (query.isNotEmpty()) {
+                          Text(
+                              "✕", color = Color.White.copy(alpha = 0.8f), fontSize = 16.sp,
+                              modifier = Modifier.clickable { query = "" }.padding(start = 8.dp)
+                          )
+                      }
+                  }
+                  Spacer(Modifier.height(12.dp))
+                  if (query.isNotBlank()) {
+                      val results = apps.filter { it.label.contains(query.trim(), ignoreCase = true) }
+                      if (results.isEmpty()) {
+                          Text("No apps found", color = Color.White.copy(alpha = 0.6f), fontSize = 14.sp)
+                      } else {
+                          AppGrid(results, columns, iconSize, ui, Modifier.weight(1f))
+                      }
+                  } else {
+                      LazyVerticalGrid(
+                          columns = GridCells.Fixed(if (wide) 4 else 2),
+                          modifier = Modifier.weight(1f),
+                          horizontalArrangement = Arrangement.spacedBy(12.dp),
+                          verticalArrangement = Arrangement.spacedBy(12.dp)
                       ) {
-                          Column(Modifier.padding(14.dp)) {
-                              Text(name, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                              Text("${list.size} apps", color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp)
-                              Spacer(Modifier.height(8.dp))
-                              list.take(4).chunked(2).forEach { row ->
-                                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                      row.forEach { a ->
-                                          Image(a.icon, null, Modifier.size(34.dp).clip(RoundedCornerShape(9.dp)))
+                          items(cards) { (name, list) ->
+                              val active = list.any { it.pkg in ui.counts || it.pkg in ui.ringing }
+                              val total = list.sumOf { ui.counts[it.pkg] ?: 0 }
+                              Box(
+                                  Modifier
+                                      .height(150.dp)
+                                      .glass(RoundedCornerShape(26.dp))
+                                      .shineEffect(active, ui.shine)
+                                      .clickable { onOpen(name) }
+                              ) {
+                                  Column(Modifier.padding(14.dp)) {
+                                      Text(name, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                                      Text(
+                                          "${list.size} apps",
+                                          color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp
+                                      )
+                                      Spacer(Modifier.height(8.dp))
+                                      list.take(4).chunked(2).forEach { row ->
+                                          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                              row.forEach { a ->
+                                                  Image(
+                                                      a.icon, null,
+                                                      Modifier.size(34.dp).clip(RoundedCornerShape(9.dp))
+                                                  )
+                                              }
+                                          }
+                                          Spacer(Modifier.height(6.dp))
                                       }
                                   }
-                                  Spacer(Modifier.height(6.dp))
+                                  if (total > 0) {
+                                      CountBadge(total, Modifier.align(Alignment.TopEnd).padding(10.dp))
+                                  }
                               }
-                          }
-                          if (total > 0) {
-                              CountBadge(total, Modifier.align(Alignment.TopEnd).padding(10.dp))
                           }
                       }
                   }
@@ -1080,24 +1300,11 @@ jobs:
           }
 
           @Composable
-          fun EditBadge(label: String, color: Color, onClick: () -> Unit, modifier: Modifier = Modifier) {
-              Box(
-                  modifier
-                      .size(22.dp)
-                      .clip(CircleShape)
-                      .background(color)
-                      .border(1.dp, Color.White.copy(alpha = 0.9f), CircleShape)
-                      .clickable { onClick() },
-                  contentAlignment = Alignment.Center
-              ) {
-                  Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-              }
-          }
-
-          @Composable
           fun AppTile(app: AppItem, tileSize: Dp, ui: UiEnv, dockStyle: Boolean = false) {
               val cur = rememberUpdatedState(ui)
               var pressed by remember { mutableStateOf(false) }
+              var origin by remember { mutableStateOf(Offset.Zero) }
+              var boxSize by remember { mutableStateOf(IntSize.Zero) }
               val scale = animateFloatAsState(
                   if (pressed) 0.86f else 1f,
                   spring(dampingRatio = 0.45f, stiffness = 400f),
@@ -1111,6 +1318,10 @@ jobs:
 
               Box(
                   Modifier
+                      .onGloballyPositioned {
+                          origin = it.positionInRoot()
+                          boxSize = it.size
+                      }
                       .graphicsLayer {
                           val u = cur.value
                           rotationZ = when {
@@ -1129,7 +1340,22 @@ jobs:
                                   pressed = false
                               },
                               onTap = { if (!cur.value.editing) cur.value.onLaunch(app) },
-                              onLongPress = { cur.value.onEdit() }
+                              onLongPress = {
+                                  val u = cur.value
+                                  if (!u.editing) {
+                                      val remove = u.onRemove
+                                      u.onMenu(
+                                          MenuState(
+                                              app,
+                                              Offset(
+                                                  origin.x + boxSize.width / 2f,
+                                                  origin.y + boxSize.height.toFloat()
+                                              ),
+                                              remove?.let { r -> { r(app) } }
+                                          )
+                                      )
+                                  }
+                              }
                           )
                       }
                       .padding(6.dp)
@@ -1145,13 +1371,12 @@ jobs:
                               )
                               .clip(shape)
                               .shineEffect(active, ui.shine)
-                              .ringGlow(ringing, ui.ring)
-                              .padding(tileSize * 0.2f),
+                              .ringGlow(ringing, ui.ring),
                           contentAlignment = Alignment.Center
                       ) {
                           Image(
-                              app.icon, app.label, Modifier.fillMaxSize(),
-                              colorFilter = ColorFilter.tint(Color.White)
+                              app.icon, app.label,
+                              Modifier.size(tileSize * 0.74f).clip(RoundedCornerShape(tileSize * 0.2f))
                           )
                       }
                   } else {
@@ -1170,22 +1395,86 @@ jobs:
                       }
                   }
 
-                  if (ui.editing) {
-                      if (app.removable) {
-                          EditBadge(
-                              "✕", Danger, { cur.value.onUninstall(app) },
-                              Modifier.align(Alignment.TopEnd).offset(x = 6.dp, y = (-6).dp)
-                          )
-                      }
-                      if (ui.onRemove != null) {
-                          EditBadge(
-                              "−", Slate, { cur.value.onRemove?.invoke(app) },
-                              Modifier.align(Alignment.TopStart).offset(x = (-6).dp, y = (-6).dp)
-                          )
-                      }
-                  } else if (count > 0) {
+                  if (!ui.editing && count > 0) {
                       CountBadge(count, Modifier.align(Alignment.TopEnd).offset(x = 6.dp, y = (-6).dp))
                   }
+              }
+          }
+
+          // iOS-style long-press menu.
+          @Composable
+          fun AppMenu(
+              m: MenuState, maxW: Float, maxH: Float,
+              onDismiss: () -> Unit, onEdit: () -> Unit, onUninstall: (AppItem) -> Unit
+          ) {
+              val d = LocalDensity.current
+              val canRemove = m.onRemove != null
+              val rowsShown = 1 + (if (canRemove) 1 else 0) + (if (m.app.removable) 1 else 0)
+              val cardW = with(d) { 240.dp.toPx() }
+              val cardH = with(d) { (52.dp * rowsShown + 12.dp).toPx() }
+              val pad = with(d) { 8.dp.toPx() }
+              val x = (m.anchor.x - cardW / 2f).coerceIn(pad, maxOf(pad, maxW - cardW - pad))
+              var y = m.anchor.y + pad
+              if (y + cardH > maxH - pad) y = (m.anchor.y - cardH - with(d) { 70.dp.toPx() }).coerceAtLeast(pad)
+
+              Box(
+                  Modifier
+                      .fillMaxSize()
+                      .background(Color.Black.copy(alpha = 0.3f))
+                      .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {
+                          onDismiss()
+                      }
+              ) {
+                  Column(
+                      Modifier
+                          .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
+                          .width(240.dp)
+                          .glass(RoundedCornerShape(22.dp))
+                          .background(Color(0xFF0B1226).copy(alpha = 0.78f))
+                          .padding(vertical = 6.dp)
+                  ) {
+                      var first = true
+                      if (canRemove) {
+                          MenuItem("⊖", "Remove from Screen", Danger) {
+                              m.onRemove?.invoke()
+                              onDismiss()
+                          }
+                          first = false
+                      }
+                      if (m.app.removable) {
+                          if (!first) MenuDivider()
+                          MenuItem("🗑", "Uninstall", Danger) {
+                              onUninstall(m.app)
+                              onDismiss()
+                          }
+                          first = false
+                      }
+                      if (!first) MenuDivider()
+                      MenuItem("▦", "Edit Home Screen", Color.White) {
+                          onEdit()
+                          onDismiss()
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun MenuDivider() {
+              Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.12f)))
+          }
+
+          @Composable
+          fun MenuItem(glyph: String, text: String, color: Color, onClick: () -> Unit) {
+              Row(
+                  Modifier
+                      .fillMaxWidth()
+                      .clickable { onClick() }
+                      .padding(horizontal = 18.dp, vertical = 14.dp),
+                  verticalAlignment = Alignment.CenterVertically
+              ) {
+                  Text(glyph, color = color, fontSize = 18.sp)
+                  Spacer(Modifier.width(14.dp))
+                  Text(text, color = color, fontSize = 16.sp)
               }
           }
 
@@ -1307,16 +1596,19 @@ jobs:
               }
           }
 
-          // Draggable bell: tap = notifications, long-press = quick settings, drag = move.
+          // Draggable round buttons. quick=false opens notifications, quick=true opens the control panel.
           @Composable
-          fun ShadeButton(maxW: Float, maxH: Float, prefs: SharedPreferences) {
+          fun FloatingButton(
+              maxW: Float, maxH: Float, prefs: SharedPreferences,
+              key: String, icon: String, quick: Boolean, slot: Int
+          ) {
               val ctx = LocalContext.current
               val d = LocalDensity.current
               val sizePx = with(d) { 52.dp.toPx() }
-              val defX = maxW - sizePx - with(d) { 16.dp.toPx() }
+              val defX = maxW - sizePx - with(d) { 16.dp.toPx() } - slot * with(d) { 68.dp.toPx() }
               val defY = maxH - sizePx - with(d) { 140.dp.toPx() }
-              var x by remember { mutableFloatStateOf(prefs.getFloat("bx", defX)) }
-              var y by remember { mutableFloatStateOf(prefs.getFloat("by", defY)) }
+              var x by remember { mutableFloatStateOf(prefs.getFloat(key + "x", defX)) }
+              var y by remember { mutableFloatStateOf(prefs.getFloat(key + "y", defY)) }
 
               Box(
                   Modifier
@@ -1324,14 +1616,13 @@ jobs:
                       .size(52.dp)
                       .glass(CircleShape)
                       .pointerInput(Unit) {
-                          detectTapGestures(
-                              onTap = { pullShade(ctx, false) },
-                              onLongPress = { pullShade(ctx, true) }
-                          )
+                          detectTapGestures(onTap = { pullShade(ctx, quick) })
                       }
                       .pointerInput(maxW, maxH) {
                           detectDragGestures(
-                              onDragEnd = { prefs.edit().putFloat("bx", x).putFloat("by", y).apply() }
+                              onDragEnd = {
+                                  prefs.edit().putFloat(key + "x", x).putFloat(key + "y", y).apply()
+                              }
                           ) { change, drag ->
                               change.consume()
                               x = (x + drag.x).coerceIn(0f, maxW - sizePx)
@@ -1340,7 +1631,7 @@ jobs:
                       },
                   contentAlignment = Alignment.Center
               ) {
-                  Text("🔔", fontSize = 20.sp)
+                  Text(icon, fontSize = 20.sp)
               }
           }
           EOF_FILE
