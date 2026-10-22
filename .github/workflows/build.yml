@@ -25,7 +25,7 @@ jobs:
 
       - name: Generate project files
         run: |
-          mkdir -p app/src/main/java/com/example/foldlauncher
+          mkdir -p app/src/main/java/com/example/foldlauncher app/src/main/res/xml app/src/main/res/values
           cat > settings.gradle.kts <<'EOF_FILE'
           pluginManagement {
               repositories {
@@ -68,8 +68,8 @@ jobs:
                   applicationId = "com.example.foldlauncher"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
+                  versionCode = 2
+                  versionName = "2.0"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -91,10 +91,27 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
               <queries>
                   <intent>
                       <action android:name="android.intent.action.MAIN" />
                       <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.DIAL" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.SENDTO" />
+                      <data android:scheme="smsto" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <category android:name="android.intent.category.BROWSABLE" />
+                      <data android:scheme="https" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.media.action.STILL_IMAGE_CAMERA" />
                   </intent>
               </queries>
 
@@ -114,127 +131,482 @@ jobs:
                           <category android:name="android.intent.category.DEFAULT" />
                       </intent-filter>
                   </activity>
+
+                  <service
+                      android:name=".NotifService"
+                      android:exported="true"
+                      android:label="FoldLauncher notifications"
+                      android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.service.notification.NotificationListenerService" />
+                      </intent-filter>
+                  </service>
+
+                  <service
+                      android:name=".ShadeService"
+                      android:exported="true"
+                      android:label="FoldLauncher notification button"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_service_config" />
+                  </service>
               </application>
           </manifest>
+          EOF_FILE
+          cat > app/src/main/res/xml/accessibility_service_config.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:description="@string/shade_desc"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canRetrieveWindowContent="false"
+              android:notificationTimeout="100" />
+          EOF_FILE
+          cat > app/src/main/res/values/strings.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="shade_desc">Lets the launcher button open your notifications and quick settings.</string>
+          </resources>
           EOF_FILE
           cat > app/src/main/java/com/example/foldlauncher/MainActivity.kt <<'EOF_FILE'
           package com.example.foldlauncher
 
+          import android.Manifest
+          import android.accessibilityservice.AccessibilityService
           import android.content.Context
           import android.content.Intent
+          import android.content.SharedPreferences
+          import android.content.pm.ApplicationInfo
+          import android.content.pm.PackageManager
+          import android.net.Uri
+          import android.os.Build
           import android.os.Bundle
+          import android.provider.MediaStore
+          import android.provider.Settings
           import androidx.activity.ComponentActivity
+          import androidx.activity.compose.BackHandler
           import androidx.activity.compose.setContent
-          import androidx.compose.foundation.border
+          import androidx.compose.animation.core.*
           import androidx.compose.foundation.Image
           import androidx.compose.foundation.background
+          import androidx.compose.foundation.border
           import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.gestures.detectDragGestures
+          import androidx.compose.foundation.gestures.detectTapGestures
+          import androidx.compose.foundation.interaction.MutableInteractionSource
           import androidx.compose.foundation.layout.*
           import androidx.compose.foundation.lazy.grid.GridCells
           import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
           import androidx.compose.foundation.lazy.grid.items
           import androidx.compose.foundation.pager.HorizontalPager
+          import androidx.compose.foundation.pager.VerticalPager
           import androidx.compose.foundation.pager.rememberPagerState
+          import androidx.compose.foundation.shape.CircleShape
           import androidx.compose.foundation.shape.RoundedCornerShape
           import androidx.compose.material3.Text
-          import androidx.compose.runtime.Composable
-          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.*
           import androidx.compose.ui.Alignment
           import androidx.compose.ui.Modifier
           import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.draw.drawWithContent
+          import androidx.compose.ui.graphics.Brush
           import androidx.compose.ui.graphics.Color
           import androidx.compose.ui.graphics.ColorFilter
           import androidx.compose.ui.graphics.ImageBitmap
           import androidx.compose.ui.graphics.asImageBitmap
+          import androidx.compose.ui.input.pointer.pointerInput
           import androidx.compose.ui.platform.LocalConfiguration
           import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.platform.LocalDensity
           import androidx.compose.ui.text.style.TextOverflow
           import androidx.compose.ui.unit.Dp
+          import androidx.compose.ui.unit.IntOffset
           import androidx.compose.ui.unit.dp
           import androidx.compose.ui.unit.sp
+          import androidx.core.app.NotificationManagerCompat
           import androidx.core.graphics.drawable.toBitmap
+          import kotlinx.coroutines.delay
+          import kotlin.math.roundToInt
 
           class MainActivity : ComponentActivity() {
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+                  }
                   setContent { Launcher() }
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  // Opening the launcher silences the low-battery beep.
+                  NotifService.silenceRequested = true
               }
           }
 
-          data class AppItem(val label: String, val pkg: String, val icon: ImageBitmap)
+          // ---------- Data ----------
+
+          data class AppItem(val label: String, val pkg: String, val icon: ImageBitmap, val folder: String)
+
+          val FOLDERS = listOf("Work", "Entertainment", "Games", "Other")
+
+          private val WORK_HINTS = listOf(
+              "office", "slack", "teams", "zoom", "docs", "sheets", "slides", "drive", "calendar",
+              "outlook", "notion", "trello", "excel", "powerpoint", "onedrive", "dropbox", "mail"
+          )
+          private val FUN_HINTS = listOf(
+              "youtube", "netflix", "spotify", "tiktok", "instagram", "facebook", "twitch", "hulu",
+              "disney", "music", "video", "snapchat", "reddit", "twitter", "pinterest", "prime"
+          )
+
+          fun folderFor(ai: ApplicationInfo, pkg: String): String {
+              @Suppress("DEPRECATION")
+              val isGame = ai.category == ApplicationInfo.CATEGORY_GAME ||
+                  (ai.flags and ApplicationInfo.FLAG_IS_GAME) != 0
+              if (isGame) return "Games"
+              when (ai.category) {
+                  ApplicationInfo.CATEGORY_PRODUCTIVITY -> return "Work"
+                  ApplicationInfo.CATEGORY_AUDIO,
+                  ApplicationInfo.CATEGORY_VIDEO,
+                  ApplicationInfo.CATEGORY_IMAGE,
+                  ApplicationInfo.CATEGORY_SOCIAL,
+                  ApplicationInfo.CATEGORY_NEWS -> return "Entertainment"
+              }
+              val p = pkg.lowercase()
+              if (WORK_HINTS.any { p.contains(it) } || p.endsWith(".gm")) return "Work"
+              if (FUN_HINTS.any { p.contains(it) }) return "Entertainment"
+              return "Other"
+          }
 
           fun loadApps(ctx: Context): List<AppItem> {
               val pm = ctx.packageManager
               val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
               return pm.queryIntentActivities(intent, 0)
-                  .map {
+                  .filter { it.activityInfo.packageName != ctx.packageName }
+                  .distinctBy { it.activityInfo.packageName }
+                  .map { ri ->
                       AppItem(
-                          it.loadLabel(pm).toString(),
-                          it.activityInfo.packageName,
-                          it.loadIcon(pm).toBitmap(192, 192).asImageBitmap()
+                          ri.loadLabel(pm).toString(),
+                          ri.activityInfo.packageName,
+                          ri.loadIcon(pm).toBitmap(192, 192).asImageBitmap(),
+                          folderFor(ri.activityInfo.applicationInfo, ri.activityInfo.packageName)
                       )
                   }
                   .sortedBy { it.label.lowercase() }
           }
 
+          fun defaultDock(ctx: Context, apps: List<AppItem>): List<AppItem> {
+              val pm = ctx.packageManager
+              val intents = listOf(
+                  Intent(Intent.ACTION_DIAL),
+                  Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:")),
+                  Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com")),
+                  Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
+              )
+              val picked = intents
+                  .mapNotNull { i -> pm.resolveActivity(i, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName }
+                  .mapNotNull { p -> apps.find { it.pkg == p } }
+                  .distinct()
+              return (picked + apps.filter { it !in picked }).take(4)
+          }
+
+          fun isListenerOn(ctx: Context): Boolean =
+              NotificationManagerCompat.getEnabledListenerPackages(ctx).contains(ctx.packageName)
+
+          fun pullShade(ctx: Context, quickSettings: Boolean) {
+              val svc = ShadeService.instance
+              if (svc == null) {
+                  ctx.startActivity(
+                      Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                  )
+                  return
+              }
+              svc.performGlobalAction(
+                  if (quickSettings) AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS
+                  else AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS
+              )
+          }
+
+          // ---------- Shine effect ----------
+
+          fun Modifier.shineEffect(active: Boolean, progress: () -> Float): Modifier =
+              if (!active) this else this.drawWithContent {
+                  drawContent()
+                  val w = this.size.width
+                  val x = -0.6f * w + progress() * 1.6f * w
+                  drawRect(
+                      Brush.horizontalGradient(
+                          listOf(Color.Transparent, Color.White.copy(alpha = 0.8f), Color.Transparent),
+                          startX = x,
+                          endX = x + 0.6f * w
+                      )
+                  )
+              }
+
+          // ---------- Screens ----------
+
           @Composable
           fun Launcher() {
               val ctx = LocalContext.current
+              val prefs = remember { ctx.getSharedPreferences("fold", Context.MODE_PRIVATE) }
               val apps = remember { loadApps(ctx) }
-
-              // Recomposes automatically when you fold or unfold.
-              val wide = LocalConfiguration.current.screenWidthDp >= 600
-              val columns = if (wide) 8 else 4
-              val iconSize = if (wide) 68.dp else 52.dp
-              val dockApps = apps.take(4)
-
-              Row(
-                  Modifier
-                      .fillMaxSize()
-                      .systemBarsPadding()
-                      .padding(horizontal = 16.dp, vertical = 8.dp)
-              ) {
-                  Column(Modifier.weight(1f).fillMaxHeight()) {
-                      if (wide) {
-                          Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                              WidgetStack(Modifier.weight(0.32f).fillMaxHeight())
-                              AppGrid(apps, columns, iconSize, Modifier.weight(0.68f).fillMaxHeight())
-                          }
-                      } else {
-                          WidgetStack(Modifier.fillMaxWidth().height(120.dp))
-                          Spacer(Modifier.height(12.dp))
-                          AppGrid(apps, columns, iconSize, Modifier.weight(1f))
+              val dock = remember(apps) { defaultDock(ctx, apps) }
+              val counts = remember {
+                  mutableStateMapOf<String, Int>().apply {
+                      apps.forEach { a ->
+                          val c = prefs.getInt("c_${a.pkg}", 0)
+                          if (c > 0) put(a.pkg, c)
                       }
                   }
-                  Spacer(Modifier.width(12.dp))
-                  SideDock(dockApps, if (wide) 56.dp else 44.dp)
+              }
+              val folders = remember(apps) { FOLDERS.associateWith { n -> apps.filter { it.folder == n } } }
+
+              val wide = LocalConfiguration.current.screenWidthDp >= 600
+              val columns = if (wide) 8 else 4
+              val iconSize = if (wide) 64.dp else 52.dp
+              val notif = NotifState.packages
+
+              // One shared animation: sweep for 0.7s, rest until 2s, repeat.
+              val shineAnim = rememberInfiniteTransition(label = "shine").animateFloat(
+                  initialValue = 0f,
+                  targetValue = 1f,
+                  animationSpec = infiniteRepeatable(
+                      keyframes {
+                          durationMillis = 2000
+                          0f at 0 using LinearEasing
+                          1f at 700
+                      }
+                  ),
+                  label = "shine"
+              )
+              val shine: () -> Float = { shineAnim.value }
+
+              val onLaunch: (AppItem) -> Unit = { a ->
+                  val n = (counts[a.pkg] ?: 0) + 1
+                  counts[a.pkg] = n
+                  prefs.edit().putInt("c_${a.pkg}", n).apply()
+                  ctx.packageManager.getLaunchIntentForPackage(a.pkg)?.let { ctx.startActivity(it) }
+              }
+
+              val ranked = apps.sortedByDescending { counts[it.pkg] ?: 0 }
+              val pager = rememberPagerState { 2 }
+              var openFolder by remember { mutableStateOf<String?>(null) }
+              BackHandler(openFolder != null) { openFolder = null }
+
+              var listenerOn by remember { mutableStateOf(isListenerOn(ctx)) }
+              LaunchedEffect(Unit) {
+                  while (true) {
+                      delay(2000)
+                      listenerOn = isListenerOn(ctx)
+                  }
+              }
+
+              BoxWithConstraints(Modifier.fillMaxSize()) {
+                  val maxW = constraints.maxWidth.toFloat()
+                  val maxH = constraints.maxHeight.toFloat()
+
+                  Row(
+                      Modifier
+                          .fillMaxSize()
+                          .systemBarsPadding()
+                          .padding(horizontal = 16.dp, vertical = 8.dp)
+                  ) {
+                      Column(Modifier.weight(1f).fillMaxHeight()) {
+                          if (!listenerOn) {
+                              Text(
+                                  "Tap to turn on notification shine",
+                                  color = Color.White,
+                                  fontSize = 12.sp,
+                                  modifier = Modifier
+                                      .padding(bottom = 6.dp)
+                                      .clip(RoundedCornerShape(12.dp))
+                                      .background(Color.White.copy(alpha = 0.2f))
+                                      .clickable {
+                                          ctx.startActivity(
+                                              Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                                                  .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                          )
+                                      }
+                                      .padding(horizontal = 12.dp, vertical = 6.dp)
+                              )
+                          }
+                          HorizontalPager(pager, Modifier.weight(1f)) { page ->
+                              if (page == 0) {
+                                  HomePage(ranked.take(columns * 4), columns, iconSize, wide, notif, shine, onLaunch)
+                              } else {
+                                  FolderPage(folders, wide, notif, shine) { openFolder = it }
+                              }
+                          }
+                          Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.Center) {
+                              repeat(2) { i ->
+                                  Box(
+                                      Modifier
+                                          .padding(3.dp)
+                                          .size(7.dp)
+                                          .clip(CircleShape)
+                                          .background(Color.White.copy(alpha = if (pager.currentPage == i) 1f else 0.4f))
+                                  )
+                              }
+                          }
+                      }
+                      Spacer(Modifier.width(12.dp))
+                      SideDock(dock, if (wide) 56.dp else 44.dp, notif, shine, onLaunch)
+                  }
+
+                  openFolder?.let { name ->
+                      FolderOverlay(
+                          name, folders[name].orEmpty(), wide, notif, shine,
+                          onLaunch = { a -> onLaunch(a); openFolder = null },
+                          onClose = { openFolder = null }
+                      )
+                  }
+
+                  ShadeButton(maxW, maxH, prefs)
               }
           }
 
           @Composable
-          fun AppGrid(apps: List<AppItem>, columns: Int, iconSize: Dp, modifier: Modifier) {
-              val ctx = LocalContext.current
+          fun HomePage(
+              apps: List<AppItem>, columns: Int, iconSize: Dp, wide: Boolean,
+              notif: Set<String>, shine: () -> Float, onLaunch: (AppItem) -> Unit
+          ) {
+              if (wide) {
+                  Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                      WidgetStack(Modifier.weight(0.32f).fillMaxHeight())
+                      Column(Modifier.weight(0.68f).fillMaxHeight()) {
+                          Text("Most used", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
+                          Spacer(Modifier.height(8.dp))
+                          AppGrid(apps, columns, iconSize, notif, shine, onLaunch, Modifier.weight(1f))
+                      }
+                  }
+              } else {
+                  Column(Modifier.fillMaxSize()) {
+                      WidgetStack(Modifier.fillMaxWidth().height(110.dp))
+                      Spacer(Modifier.height(10.dp))
+                      Text("Most used", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
+                      Spacer(Modifier.height(8.dp))
+                      AppGrid(apps, columns, iconSize, notif, shine, onLaunch, Modifier.weight(1f))
+                  }
+              }
+          }
+
+          @Composable
+          fun FolderPage(
+              folders: Map<String, List<AppItem>>, wide: Boolean,
+              notif: Set<String>, shine: () -> Float, onOpen: (String) -> Unit
+          ) {
+              LazyVerticalGrid(
+                  columns = GridCells.Fixed(if (wide) 4 else 2),
+                  modifier = Modifier.fillMaxSize(),
+                  horizontalArrangement = Arrangement.spacedBy(12.dp),
+                  verticalArrangement = Arrangement.spacedBy(12.dp)
+              ) {
+                  items(FOLDERS) { name ->
+                      val list = folders[name].orEmpty()
+                      Column(
+                          Modifier
+                              .height(150.dp)
+                              .clip(RoundedCornerShape(24.dp))
+                              .background(Color.White.copy(alpha = 0.2f))
+                              .shineEffect(list.any { it.pkg in notif }, shine)
+                              .clickable { onOpen(name) }
+                              .padding(14.dp)
+                      ) {
+                          Text(name, color = Color.White, fontSize = 16.sp)
+                          Text("${list.size} apps", color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp)
+                          Spacer(Modifier.height(8.dp))
+                          list.take(4).chunked(2).forEach { row ->
+                              Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                  row.forEach { a ->
+                                      Image(a.icon, null, Modifier.size(34.dp).clip(RoundedCornerShape(9.dp)))
+                                  }
+                              }
+                              Spacer(Modifier.height(6.dp))
+                          }
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun FolderOverlay(
+              name: String, apps: List<AppItem>, wide: Boolean,
+              notif: Set<String>, shine: () -> Float,
+              onLaunch: (AppItem) -> Unit, onClose: () -> Unit
+          ) {
+              Box(
+                  Modifier
+                      .fillMaxSize()
+                      .background(Color.Black.copy(alpha = 0.55f))
+                      .clickable { onClose() },
+                  contentAlignment = Alignment.Center
+              ) {
+                  Column(
+                      Modifier
+                          .then(if (wide) Modifier.width(560.dp) else Modifier.fillMaxWidth(0.92f))
+                          .heightIn(max = 520.dp)
+                          .clip(RoundedCornerShape(28.dp))
+                          .background(Color(0xFF1E2433).copy(alpha = 0.95f))
+                          .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {}
+                          .padding(20.dp)
+                  ) {
+                      Text(name, color = Color.White, fontSize = 20.sp)
+                      Spacer(Modifier.height(12.dp))
+                      if (apps.isEmpty()) {
+                          Text("No apps here yet", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
+                      } else {
+                          AppGrid(apps, if (wide) 6 else 4, 52.dp, notif, shine, onLaunch, Modifier.weight(1f, fill = false))
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun AppGrid(
+              apps: List<AppItem>, columns: Int, iconSize: Dp,
+              notif: Set<String>, shine: () -> Float, onLaunch: (AppItem) -> Unit,
+              modifier: Modifier = Modifier
+          ) {
               LazyVerticalGrid(
                   columns = GridCells.Fixed(columns),
                   modifier = modifier,
                   verticalArrangement = Arrangement.spacedBy(16.dp)
               ) {
                   items(apps, key = { it.pkg }) { app ->
-                      Column(
-                          Modifier.clickable { launch(ctx, app.pkg) },
-                          horizontalAlignment = Alignment.CenterHorizontally
-                      ) {
-                          Image(app.icon, app.label, Modifier.size(iconSize).clip(RoundedCornerShape(iconSize * 0.26f)))
-                          Spacer(Modifier.height(4.dp))
-                          Text(app.label, color = Color.White, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                      }
+                      AppIcon(app, iconSize, app.pkg in notif, shine, onLaunch)
                   }
               }
           }
 
           @Composable
-          fun SideDock(apps: List<AppItem>, size: Dp) {
-              val ctx = LocalContext.current
+          fun AppIcon(
+              app: AppItem, iconSize: Dp, active: Boolean,
+              shine: () -> Float, onLaunch: (AppItem) -> Unit
+          ) {
+              Column(
+                  Modifier.clickable { onLaunch(app) },
+                  horizontalAlignment = Alignment.CenterHorizontally
+              ) {
+                  Image(
+                      app.icon, app.label,
+                      Modifier
+                          .size(iconSize)
+                          .clip(RoundedCornerShape(iconSize * 0.26f))
+                          .shineEffect(active, shine)
+                  )
+                  Spacer(Modifier.height(4.dp))
+                  Text(app.label, color = Color.White, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+              }
+          }
+
+          @Composable
+          fun SideDock(
+              apps: List<AppItem>, size: Dp,
+              notif: Set<String>, shine: () -> Float, onLaunch: (AppItem) -> Unit
+          ) {
               Box(Modifier.fillMaxHeight(), contentAlignment = Alignment.CenterEnd) {
                   Column(
                       Modifier
@@ -250,7 +622,8 @@ jobs:
                                   .size(size)
                                   .border(1.5.dp, Color.White, shape)
                                   .clip(shape)
-                                  .clickable { launch(ctx, app.pkg) }
+                                  .shineEffect(app.pkg in notif, shine)
+                                  .clickable { onLaunch(app) }
                                   .padding(size * 0.2f),
                               contentAlignment = Alignment.Center
                           ) {
@@ -267,14 +640,14 @@ jobs:
 
           @Composable
           fun WidgetStack(modifier: Modifier) {
-              // Placeholder cards. Real widgets need AppWidgetHost (next step).
+              // Placeholder cards. Real widgets need AppWidgetHost (later step).
               val pager = rememberPagerState { 3 }
               val titles = listOf("Weather", "Calendar", "Notes")
-              HorizontalPager(pager, modifier) { page ->
+              VerticalPager(pager, modifier) { page ->
                   Box(
                       Modifier
                           .fillMaxSize()
-                          .padding(horizontal = 4.dp)
+                          .padding(vertical = 3.dp)
                           .clip(RoundedCornerShape(24.dp))
                           .background(Color.White.copy(alpha = 0.2f))
                           .padding(16.dp),
@@ -285,8 +658,201 @@ jobs:
               }
           }
 
-          private fun launch(ctx: Context, pkg: String) {
-              ctx.packageManager.getLaunchIntentForPackage(pkg)?.let { ctx.startActivity(it) }
+          // Draggable bell: tap = notifications, long-press = quick settings, drag = move.
+          @Composable
+          fun ShadeButton(maxW: Float, maxH: Float, prefs: SharedPreferences) {
+              val ctx = LocalContext.current
+              val d = LocalDensity.current
+              val sizePx = with(d) { 52.dp.toPx() }
+              val defX = maxW - sizePx - with(d) { 16.dp.toPx() }
+              val defY = maxH - sizePx - with(d) { 140.dp.toPx() }
+              var x by remember { mutableFloatStateOf(prefs.getFloat("bx", defX)) }
+              var y by remember { mutableFloatStateOf(prefs.getFloat("by", defY)) }
+
+              Box(
+                  Modifier
+                      .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
+                      .size(52.dp)
+                      .clip(CircleShape)
+                      .background(Color.White.copy(alpha = 0.25f))
+                      .border(1.5.dp, Color.White, CircleShape)
+                      .pointerInput(Unit) {
+                          detectTapGestures(
+                              onTap = { pullShade(ctx, false) },
+                              onLongPress = { pullShade(ctx, true) }
+                          )
+                      }
+                      .pointerInput(maxW, maxH) {
+                          detectDragGestures(
+                              onDragEnd = { prefs.edit().putFloat("bx", x).putFloat("by", y).apply() }
+                          ) { change, drag ->
+                              change.consume()
+                              x = (x + drag.x).coerceIn(0f, maxW - sizePx)
+                              y = (y + drag.y).coerceIn(0f, maxH - sizePx)
+                          }
+                      },
+                  contentAlignment = Alignment.Center
+              ) {
+                  Text("🔔", fontSize = 20.sp)
+              }
+          }
+          EOF_FILE
+          cat > app/src/main/java/com/example/foldlauncher/Services.kt <<'EOF_FILE'
+          package com.example.foldlauncher
+
+          import android.accessibilityservice.AccessibilityService
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.media.AudioManager
+          import android.media.ToneGenerator
+          import android.os.BatteryManager
+          import android.os.Handler
+          import android.os.Looper
+          import android.service.notification.NotificationListenerService
+          import android.service.notification.StatusBarNotification
+          import android.view.accessibility.AccessibilityEvent
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.setValue
+          import androidx.core.content.ContextCompat
+
+          // Packages that currently have a visible, non-ongoing notification.
+          object NotifState {
+              var packages by mutableStateOf<Set<String>>(emptySet())
+          }
+
+          class NotifService : NotificationListenerService() {
+              private val handler = Handler(Looper.getMainLooper())
+              private var alerted = false
+              private var beeps = 0
+              private var tone: ToneGenerator? = null
+
+              private val beeper = object : Runnable {
+                  override fun run() {
+                      // Stops after ~27 seconds, when the launcher is opened, or when charging starts.
+                      if (silenceRequested || beeps >= 45) {
+                          stopBeeping()
+                          return
+                      }
+                      tone?.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 350)
+                      beeps++
+                      handler.postDelayed(this, 600)
+                  }
+              }
+
+              private val batteryReceiver = object : BroadcastReceiver() {
+                  override fun onReceive(c: Context, i: Intent) {
+                      val level = i.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                      val scale = i.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
+                      if (level < 0 || scale <= 0) return
+                      val pct = level * 100 / scale
+                      val status = i.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+                      val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                          status == BatteryManager.BATTERY_STATUS_FULL
+                      if (charging || pct > 10) {
+                          alerted = false
+                          stopBeeping()
+                      } else if (!alerted) {
+                          alerted = true
+                          postBatteryNotification(pct)
+                          startBeeping()
+                      }
+                  }
+              }
+
+              override fun onCreate() {
+                  super.onCreate()
+                  ContextCompat.registerReceiver(
+                      this, batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+                      ContextCompat.RECEIVER_NOT_EXPORTED
+                  )
+              }
+
+              override fun onDestroy() {
+                  try { unregisterReceiver(batteryReceiver) } catch (e: Exception) {}
+                  stopBeeping()
+                  super.onDestroy()
+              }
+
+              private fun startBeeping() {
+                  stopBeeping()
+                  silenceRequested = false
+                  beeps = 0
+                  tone = try {
+                      ToneGenerator(AudioManager.STREAM_ALARM, 100)
+                  } catch (e: RuntimeException) {
+                      null
+                  }
+                  handler.post(beeper)
+              }
+
+              private fun stopBeeping() {
+                  handler.removeCallbacks(beeper)
+                  tone?.release()
+                  tone = null
+              }
+
+              private fun postBatteryNotification(pct: Int) {
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.createNotificationChannel(
+                      NotificationChannel("battery", "Battery alert", NotificationManager.IMPORTANCE_HIGH)
+                  )
+                  val pi = PendingIntent.getActivity(
+                      this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+                  )
+                  nm.notify(
+                      1,
+                      Notification.Builder(this, "battery")
+                          .setSmallIcon(android.R.drawable.ic_lock_idle_low_battery)
+                          .setContentTitle("Battery at $pct%")
+                          .setContentText("Plug in your charger.")
+                          .setContentIntent(pi)
+                          .setAutoCancel(true)
+                          .build()
+                  )
+              }
+
+              private fun refresh() {
+                  NotifState.packages = try {
+                      activeNotifications.filter { !it.isOngoing }.map { it.packageName }.toSet()
+                  } catch (e: Exception) {
+                      emptySet()
+                  }
+              }
+
+              override fun onListenerConnected() { refresh() }
+              override fun onNotificationPosted(sbn: StatusBarNotification?) { refresh() }
+              override fun onNotificationRemoved(sbn: StatusBarNotification?) { refresh() }
+
+              companion object {
+                  @Volatile var silenceRequested = false
+              }
+          }
+
+          // Lets the launcher's bell button open the notification shade / quick settings.
+          class ShadeService : AccessibilityService() {
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+              override fun onInterrupt() {}
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  instance = this
+              }
+
+              override fun onDestroy() {
+                  instance = null
+                  super.onDestroy()
+              }
+
+              companion object {
+                  @Volatile var instance: ShadeService? = null
+              }
           }
           EOF_FILE
 
