@@ -1,3 +1,338 @@
+name: Build FoldLauncher
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Generate project files
+        run: |
+          mkdir -p app/src/main/java/com/example/foldlauncher app/src/main/res/xml app/src/main/res/values
+          cat > settings.gradle.kts <<'EOF_FILE'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "FoldLauncher"
+          include(":app")
+          EOF_FILE
+          cat > build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.20" apply false
+              id("org.jetbrains.kotlin.plugin.compose") version "2.0.20" apply false
+          }
+          EOF_FILE
+          cat > gradle.properties <<'EOF_FILE'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx3g
+          EOF_FILE
+          cat > app/build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+          }
+
+          android {
+              namespace = "com.example.foldlauncher"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.example.foldlauncher"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 5
+                  versionName = "5.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+              buildFeatures { compose = true }
+          }
+
+          dependencies {
+              implementation(platform("androidx.compose:compose-bom:2024.09.00"))
+              implementation("androidx.compose.foundation:foundation")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.activity:activity-compose:1.9.2")
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+          }
+          EOF_FILE
+          cat > app/src/main/AndroidManifest.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+              <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.DIAL" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.SENDTO" />
+                      <data android:scheme="smsto" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <category android:name="android.intent.category.BROWSABLE" />
+                      <data android:scheme="https" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.media.action.STILL_IMAGE_CAMERA" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:label="FoldLauncher"
+                  android:theme="@android:style/Theme.DeviceDefault.Wallpaper.NoTitleBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTask"
+                      android:resizeableActivity="true"
+                      android:windowSoftInputMode="adjustResize"
+                      android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.HOME" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".NotifService"
+                      android:exported="true"
+                      android:label="FoldLauncher notifications"
+                      android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.service.notification.NotificationListenerService" />
+                      </intent-filter>
+                  </service>
+
+                  <service
+                      android:name=".ShadeService"
+                      android:exported="true"
+                      android:label="FoldLauncher notification button"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_service_config" />
+                  </service>
+              </application>
+          </manifest>
+          EOF_FILE
+          cat > app/src/main/res/xml/accessibility_service_config.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:description="@string/shade_desc"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canRetrieveWindowContent="false"
+              android:notificationTimeout="100" />
+          EOF_FILE
+          cat > app/src/main/res/values/strings.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="shade_desc">Lets the launcher button open your notifications and quick settings.</string>
+          </resources>
+          EOF_FILE
+          cat > app/src/main/java/com/example/foldlauncher/MainActivity.kt <<'EOF_FILE'
+          package com.example.foldlauncher
+
+          import android.Manifest
+          import android.accessibilityservice.AccessibilityService
+          import android.app.ActivityManager
+          import android.app.AppOpsManager
+          import android.app.usage.UsageEvents
+          import android.app.usage.UsageStatsManager
+          import android.content.Context
+          import android.content.Intent
+          import android.content.SharedPreferences
+          import android.content.pm.ApplicationInfo
+          import android.content.pm.PackageManager
+          import android.graphics.Bitmap
+          import android.graphics.BitmapFactory
+          import android.graphics.Canvas as AndroidCanvas
+          import android.graphics.drawable.AdaptiveIconDrawable
+          import android.graphics.drawable.Drawable
+          import android.net.ConnectivityManager
+          import android.net.NetworkCapabilities
+          import android.net.Uri
+          import android.os.BatteryManager
+          import android.os.Build
+          import android.os.Bundle
+          import android.provider.MediaStore
+          import android.provider.Settings
+          import android.view.WindowManager
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.BackHandler
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.compose.setContent
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.animation.core.*
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.Image
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.border
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.gestures.detectDragGestures
+          import androidx.compose.foundation.gestures.detectTapGestures
+          import androidx.compose.foundation.gestures.detectVerticalDragGestures
+          import androidx.compose.foundation.horizontalScroll
+          import androidx.compose.foundation.interaction.MutableInteractionSource
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.lazy.grid.GridCells
+          import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+          import androidx.compose.foundation.lazy.grid.items
+          import androidx.compose.foundation.pager.HorizontalPager
+          import androidx.compose.foundation.pager.PageSize
+          import androidx.compose.foundation.pager.VerticalPager
+          import androidx.compose.foundation.pager.rememberPagerState
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.shape.CircleShape
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.foundation.text.BasicTextField
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.draw.drawBehind
+          import androidx.compose.ui.draw.drawWithContent
+          import androidx.compose.ui.draw.shadow
+          import androidx.compose.ui.geometry.CornerRadius
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.geometry.Size
+          import androidx.compose.ui.graphics.Brush
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.ColorFilter
+          import androidx.compose.ui.graphics.ImageBitmap
+          import androidx.compose.ui.graphics.Shape
+          import androidx.compose.ui.graphics.SolidColor
+          import androidx.compose.ui.graphics.StrokeCap
+          import androidx.compose.ui.graphics.asImageBitmap
+          import androidx.compose.ui.graphics.drawscope.Stroke
+          import androidx.compose.ui.graphics.graphicsLayer
+          import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+          import androidx.compose.ui.input.pointer.pointerInput
+          import androidx.compose.ui.layout.ContentScale
+          import androidx.compose.ui.layout.onGloballyPositioned
+          import androidx.compose.ui.layout.positionInRoot
+          import androidx.compose.ui.zIndex
+          import androidx.compose.ui.platform.LocalConfiguration
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.platform.LocalDensity
+          import androidx.compose.ui.platform.LocalHapticFeedback
+          import androidx.compose.ui.text.TextStyle
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.style.TextOverflow
+          import androidx.compose.ui.unit.Dp
+          import androidx.compose.ui.unit.IntOffset
+          import androidx.compose.ui.unit.IntSize
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.core.app.NotificationManagerCompat
+          import androidx.core.view.WindowCompat
+          import androidx.core.view.WindowInsetsCompat
+          import androidx.core.view.WindowInsetsControllerCompat
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.launch
+          import kotlinx.coroutines.withContext
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.net.URLEncoder
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+          import kotlin.math.PI
+          import kotlin.math.roundToInt
+          import kotlin.math.sin
+
+          // ---------- Theme ----------
+
+          val NeonCyan = Color(0xFF6CE6FF)
+          val NeonViolet = Color(0xFFA78BFF)
+          val Danger = Color(0xFFFF3B5C)
+          val Ok = Color(0xFF3DDC84)
+          val Slate = Color(0xFF8E93A6)
+
+          // Frosted-glass surface: translucent gradient fill + bright rim light.
+          fun Modifier.glass(shape: Shape, strength: Float = 1f): Modifier = this
+              .clip(shape)
+              .background(
+                  Brush.linearGradient(
+                      listOf(
+                          Color.White.copy(alpha = 0.30f * strength),
+                          Color.White.copy(alpha = 0.07f * strength)
+                      )
+                  )
+              )
+              .border(
+                  1.dp,
+                  Brush.linearGradient(
+                      listOf(
+                          Color.White.copy(alpha = 0.75f * strength),
+                          NeonCyan.copy(alpha = 0.18f * strength),
+                          NeonViolet.copy(alpha = 0.40f * strength)
+                      )
+                  ),
+                  shape
+              )
+
+          // Light sweep across an icon (notification).
+          fun Modifier.shineEffect(active: Boolean, progress: () -> Float): Modifier =
+              if (!active) this else this.drawWithContent {
+                  drawContent()
+                  val w = this.size.width
+                  val x = -0.6f * w + progress() * 1.6f * w
+                  drawRect(
+                      Brush.horizontalGradient(
+                          listOf(Color.Transparent, Color.White.copy(alpha = 0.8f), Color.Transparent),
                           startX = x,
                           endX = x + 0.6f * w
                       )
@@ -82,7 +417,653 @@
           const val COLS_N = 4
           const val COLS_W = 8
           const val ROWS_N_GUESS = 5
-          const val ROWS_W_GUESS = 4                                      ) { change, dy ->
+          const val ROWS_W_GUESS = 4
+
+          // An app placed on a custom screen. Separate cells for folded (c,r) and unfolded (wc,wr) layouts.
+          data class Placed(val pkg: String, val c: Int, val r: Int, val wc: Int, val wr: Int) {
+              fun col(wide: Boolean) = if (wide) wc else c
+              fun row(wide: Boolean) = if (wide) wr else r
+              fun moved(wide: Boolean, col: Int, row: Int) =
+                  if (wide) copy(wc = col, wr = row) else copy(c = col, r = row)
+          }
+
+          data class ScreenData(val name: String, val items: List<Placed>)
+
+          fun nextFree(items: List<Placed>, wide: Boolean, columns: Int, rows: Int): Pair<Int, Int> {
+              val used = items.map { it.col(wide) to it.row(wide) }.toSet()
+              for (r in 0 until rows) {
+                  for (c in 0 until columns) {
+                      if ((c to r) !in used) return c to r
+                  }
+              }
+              return 0 to 0
+          }
+
+          fun colsFor(idx: Int, wide: Boolean): Int =
+              if (idx == 0) MAIN_COLS else if (wide) COLS_W else COLS_N
+
+          data class RecentApp(val app: AppItem, val time: Long)
+
+          data class MenuState(val app: AppItem, val anchor: Offset, val onRemove: (() -> Unit)?)
+
+          data class WeatherInfo(val temp: String, val cond: String, val place: String, val hl: String)
+
+          class WeatherState(private val prefs: SharedPreferences) {
+              var city by mutableStateOf(prefs.getString("w_city", "") ?: "")
+              var useF by mutableStateOf(prefs.getBoolean("w_f", true))
+              var temp by mutableStateOf("—")
+              var cond by mutableStateOf("")
+              var place by mutableStateOf("")
+              var hl by mutableStateOf("")
+
+              fun update(newCity: String, f: Boolean) {
+                  city = newCity.trim()
+                  useF = f
+                  prefs.edit().putString("w_city", city).putBoolean("w_f", f).apply()
+              }
+          }
+
+          // Everything an icon needs to know, passed as one object.
+          data class UiEnv(
+              val counts: Map<String, Int>,
+              val ringing: Set<String>,
+              val editing: Boolean,
+              val labels: Boolean,
+              val shine: () -> Float,
+              val wiggle: () -> Float,
+              val ring: () -> Float,
+              val onLaunch: (AppItem) -> Unit,
+              val onMenu: (MenuState) -> Unit,
+              val onRemove: ((AppItem) -> Unit)?
+          )
+
+          val FOLDERS = listOf("Work", "Entertainment", "Games", "Other")
+
+          private val WORK_HINTS = listOf(
+              "office", "slack", "teams", "zoom", "docs", "sheets", "slides", "drive", "calendar",
+              "outlook", "notion", "trello", "excel", "powerpoint", "onedrive", "dropbox", "mail"
+          )
+          private val FUN_HINTS = listOf(
+              "youtube", "netflix", "spotify", "tiktok", "instagram", "facebook", "twitch", "hulu",
+              "disney", "music", "video", "snapchat", "reddit", "twitter", "pinterest", "prime"
+          )
+
+          fun folderFor(ai: ApplicationInfo, pkg: String): String {
+              @Suppress("DEPRECATION")
+              val isGame = ai.category == ApplicationInfo.CATEGORY_GAME ||
+                  (ai.flags and ApplicationInfo.FLAG_IS_GAME) != 0
+              if (isGame) return "Games"
+              when (ai.category) {
+                  ApplicationInfo.CATEGORY_PRODUCTIVITY -> return "Work"
+                  ApplicationInfo.CATEGORY_AUDIO,
+                  ApplicationInfo.CATEGORY_VIDEO,
+                  ApplicationInfo.CATEGORY_IMAGE,
+                  ApplicationInfo.CATEGORY_SOCIAL,
+                  ApplicationInfo.CATEGORY_NEWS -> return "Entertainment"
+              }
+              val p = pkg.lowercase()
+              if (WORK_HINTS.any { p.contains(it) } || p.endsWith(".gm")) return "Work"
+              if (FUN_HINTS.any { p.contains(it) }) return "Entertainment"
+              return "Other"
+          }
+
+          private val iconCache = HashMap<String, ImageBitmap>()
+
+          // Draws an app icon edge to edge (no system mask) so we can apply one squircle to every icon.
+          fun iconBitmap(d: Drawable): Bitmap {
+              val size = 192
+              val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+              val c = AndroidCanvas(bmp)
+              if (d is AdaptiveIconDrawable) {
+                  val m = (size * 0.25f).toInt()
+                  d.background?.let {
+                      it.setBounds(-m, -m, size + m, size + m)
+                      it.draw(c)
+                  }
+                  d.foreground?.let {
+                      it.setBounds(-m, -m, size + m, size + m)
+                      it.draw(c)
+                  }
+              } else {
+                  d.setBounds(0, 0, size, size)
+                  d.draw(c)
+              }
+              return bmp
+          }
+
+          fun loadApps(ctx: Context): List<AppItem> {
+              val pm = ctx.packageManager
+              val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+              return pm.queryIntentActivities(intent, 0)
+                  .filter { it.activityInfo.packageName != ctx.packageName }
+                  .distinctBy { it.activityInfo.packageName }
+                  .map { ri ->
+                      val pkg = ri.activityInfo.packageName
+                      val ai = ri.activityInfo.applicationInfo
+                      val system = (ai.flags and ApplicationInfo.FLAG_SYSTEM) != 0 &&
+                          (ai.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0
+                      AppItem(
+                          ri.loadLabel(pm).toString(),
+                          pkg,
+                          iconCache.getOrPut(pkg) { iconBitmap(ri.loadIcon(pm)).asImageBitmap() },
+                          folderFor(ai, pkg),
+                          !system,
+                          try { pm.getPackageInfo(pkg, 0).firstInstallTime } catch (e: Exception) { 0L }
+                      )
+                  }
+                  .sortedBy { it.label.lowercase() }
+          }
+
+          fun defaultDock(ctx: Context, apps: List<AppItem>): List<AppItem> {
+              val pm = ctx.packageManager
+              val intents = listOf(
+                  Intent(Intent.ACTION_DIAL),
+                  Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:")),
+                  Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com")),
+                  Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
+              )
+              val picked = intents
+                  .mapNotNull { i -> pm.resolveActivity(i, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName }
+                  .mapNotNull { p -> apps.find { it.pkg == p } }
+                  .distinct()
+              return (picked + apps.filter { it !in picked }).take(4)
+          }
+
+          fun loadScreens(prefs: SharedPreferences): List<ScreenData> {
+              val raw = prefs.getString("screens", null) ?: return listOf(ScreenData("Home", emptyList()))
+              return try {
+                  val arr = JSONArray(raw)
+                  (0 until arr.length()).map { i ->
+                      val o = arr.getJSONObject(i)
+                      val items = ArrayList<Placed>()
+                      val ia = o.optJSONArray("items")
+                      if (ia != null) {
+                          for (k in 0 until ia.length()) {
+                              val it = ia.getJSONObject(k)
+                              items.add(
+                                  Placed(
+                                      it.getString("p"), it.getInt("c"), it.getInt("r"),
+                                      it.getInt("wc"), it.getInt("wr")
+                                  )
+                              )
+                          }
+                      } else {
+                          val legacy = o.optJSONArray("apps")
+                          if (legacy != null) {
+                              for (k in 0 until legacy.length()) {
+                                  items.add(Placed(legacy.getString(k), k % COLS_N, k / COLS_N, k % COLS_W, k / COLS_W))
+                              }
+                          }
+                      }
+                      ScreenData(o.getString("name"), items)
+                  }
+              } catch (e: Exception) {
+                  listOf(ScreenData("Home", emptyList()))
+              }
+          }
+
+          fun saveScreens(prefs: SharedPreferences, list: List<ScreenData>) {
+              val arr = JSONArray()
+              list.forEach { s ->
+                  val items = JSONArray()
+                  s.items.forEach { p ->
+                      items.put(
+                          JSONObject().put("p", p.pkg).put("c", p.c).put("r", p.r).put("wc", p.wc).put("wr", p.wr)
+                      )
+                  }
+                  arr.put(JSONObject().put("name", s.name).put("items", items))
+              }
+              prefs.edit().putString("screens", arr.toString()).apply()
+          }
+
+          fun isListenerOn(ctx: Context): Boolean =
+              NotificationManagerCompat.getEnabledListenerPackages(ctx).contains(ctx.packageName)
+
+          fun pullShade(ctx: Context, quickSettings: Boolean) {
+              val svc = ShadeService.instance
+              if (svc == null) {
+                  ctx.startActivity(
+                      Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                  )
+                  return
+              }
+              svc.performGlobalAction(
+                  if (quickSettings) AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS
+                  else AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS
+              )
+          }
+
+          // ---------- Weather (Open-Meteo, free, no key) ----------
+
+          fun httpGet(url: String): String {
+              val c = URL(url).openConnection() as HttpURLConnection
+              c.connectTimeout = 8000
+              c.readTimeout = 8000
+              return try {
+                  c.inputStream.bufferedReader().use { it.readText() }
+              } finally {
+                  c.disconnect()
+              }
+          }
+
+          fun weatherText(code: Int): String = when (code) {
+              0 -> "Clear"
+              1, 2 -> "Mostly clear"
+              3 -> "Cloudy"
+              45, 48 -> "Fog"
+              in 51..57 -> "Drizzle"
+              in 61..67 -> "Rain"
+              in 71..77 -> "Snow"
+              in 80..82 -> "Showers"
+              85, 86 -> "Snow showers"
+              in 95..99 -> "Thunderstorm"
+              else -> "—"
+          }
+
+          fun fetchWeather(city: String, f: Boolean): WeatherInfo {
+              val q = URLEncoder.encode(city, "UTF-8")
+              val geo = JSONObject(httpGet("https://geocoding-api.open-meteo.com/v1/search?name=$q&count=1"))
+              val results = geo.optJSONArray("results") ?: return WeatherInfo("—", "City not found", city, "")
+              val first = results.getJSONObject(0)
+              val lat = first.getDouble("latitude")
+              val lon = first.getDouble("longitude")
+              val unit = if (f) "fahrenheit" else "celsius"
+              val w = JSONObject(
+                  httpGet(
+                      "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon" +
+                          "&current=temperature_2m,weather_code" +
+                          "&daily=temperature_2m_max,temperature_2m_min&forecast_days=1" +
+                          "&temperature_unit=$unit"
+                  )
+              )
+              val cur = w.getJSONObject("current")
+              val t = cur.getDouble("temperature_2m").roundToInt()
+              val hl = try {
+                  val d = w.getJSONObject("daily")
+                  "H:" + d.getJSONArray("temperature_2m_max").getDouble(0).roundToInt() + "° " +
+                      "L:" + d.getJSONArray("temperature_2m_min").getDouble(0).roundToInt() + "°"
+              } catch (e: Exception) {
+                  ""
+              }
+              return WeatherInfo(
+                  "$t°",
+                  weatherText(cur.getInt("weather_code")),
+                  first.optString("name", city),
+                  hl
+              )
+          }
+
+          // ---------- Recent apps (usage access) ----------
+
+          fun hasUsageAccess(ctx: Context): Boolean {
+              val ops = ctx.getSystemService(AppOpsManager::class.java)
+              @Suppress("DEPRECATION")
+              val mode = ops.checkOpNoThrow(
+                  AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), ctx.packageName
+              )
+              return mode == AppOpsManager.MODE_ALLOWED
+          }
+
+          fun recentApps(ctx: Context, apps: List<AppItem>): List<RecentApp> {
+              return try {
+                  val usm = ctx.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+                  val now = System.currentTimeMillis()
+                  val events = usm.queryEvents(now - 24L * 3600_000L, now)
+                  val last = HashMap<String, Long>()
+                  val e = UsageEvents.Event()
+                  while (events.hasNextEvent()) {
+                      events.getNextEvent(e)
+                      if (e.eventType == UsageEvents.Event.ACTIVITY_RESUMED) last[e.packageName] = e.timeStamp
+                  }
+                  val byPkg = apps.associateBy { it.pkg }
+                  last.entries
+                      .mapNotNull { (pkg, t) -> byPkg[pkg]?.let { RecentApp(it, t) } }
+                      .sortedByDescending { it.time }
+                      .take(12)
+              } catch (e: Exception) {
+                  emptyList()
+              }
+          }
+
+          // ---------- Root ----------
+
+          @Composable
+          fun Launcher() {
+              val ctx = LocalContext.current
+              val haptic = LocalHapticFeedback.current
+              val scope = rememberCoroutineScope()
+              val prefs = remember { ctx.getSharedPreferences("fold", Context.MODE_PRIVATE) }
+
+              val tick = AppEvents.tick
+              val apps = remember(tick) { loadApps(ctx) }
+              val dock = remember(apps) { defaultDock(ctx, apps) }
+              val folders = remember(apps) { FOLDERS.associateWith { n -> apps.filter { it.folder == n } } }
+              val counts = remember {
+                  mutableStateMapOf<String, Int>().apply {
+                      apps.forEach { a ->
+                          val c = prefs.getInt("c_${a.pkg}", 0)
+                          if (c > 0) put(a.pkg, c)
+                      }
+                  }
+              }
+              // screens[0] is the Home screen (widgets + apps). The App Library is always the last page.
+              val screens = remember {
+                  mutableStateListOf<ScreenData>().apply {
+                      val loaded = loadScreens(prefs)
+                      addAll(if (loaded.isEmpty()) listOf(ScreenData("Home", emptyList())) else loaded)
+                      if (!prefs.getBoolean("seeded", false)) {
+                          val dockPkgs = dock.map { it.pkg }.toSet()
+                          val seed = apps.filter { it.pkg !in dockPkgs }.take(16)
+                          this[0] = this[0].copy(
+                              items = seed.mapIndexed { i, a ->
+                                  Placed(a.pkg, i % MAIN_COLS, i / MAIN_COLS, i % MAIN_COLS, i / MAIN_COLS)
+                              }
+                          )
+                          prefs.edit().putBoolean("seeded", true).apply()
+                          saveScreens(prefs, this)
+                      }
+                  }
+              }
+              val weather = remember { WeatherState(prefs) }
+              val dismissedAt = remember { mutableStateMapOf<String, Long>() }
+
+              val wide = LocalConfiguration.current.screenWidthDp >= 600
+              val columns = if (wide) COLS_W else COLS_N
+              var iconScale by remember { mutableIntStateOf(prefs.getInt("icon_scale", 1)) }
+              var showLabels by remember { mutableStateOf(prefs.getBoolean("labels", false)) }
+              val iconSize = (if (wide) 60.dp else 48.dp) * listOf(0.8f, 1f, 1.25f)[iconScale]
+
+              var editing by remember { mutableStateOf(false) }
+              var openFolder by remember { mutableStateOf<String?>(null) }
+              var pickerFor by remember { mutableStateOf<Int?>(null) }
+              var weatherEditing by remember { mutableStateOf(false) }
+              var menu by remember { mutableStateOf<MenuState?>(null) }
+              var gridRows by remember { mutableIntStateOf(ROWS_N_GUESS) }
+              var showRecents by remember { mutableStateOf(false) }
+              var lastSwipe by remember { mutableLongStateOf(0L) }
+
+              BackHandler(editing) { editing = false }
+              BackHandler(openFolder != null) { openFolder = null }
+              BackHandler(pickerFor != null) { pickerFor = null }
+              BackHandler(weatherEditing) { weatherEditing = false }
+              BackHandler(menu != null) { menu = null }
+              BackHandler(showRecents) { showRecents = false }
+
+              // Shared animations (only read at draw time, so no constant recomposition).
+              val inf = rememberInfiniteTransition(label = "fx")
+              val shineAnim = inf.animateFloat(
+                  initialValue = 0f,
+                  targetValue = 1f,
+                  animationSpec = infiniteRepeatable(
+                      keyframes {
+                          durationMillis = 2000
+                          0f at 0 using LinearEasing
+                          1f at 700
+                      }
+                  ),
+                  label = "shine"
+              )
+              val wiggleAnim = inf.animateFloat(
+                  initialValue = -1f,
+                  targetValue = 1f,
+                  animationSpec = infiniteRepeatable(tween(120, easing = LinearEasing), RepeatMode.Reverse),
+                  label = "wiggle"
+              )
+              val ringAnim = inf.animateFloat(
+                  initialValue = 0f,
+                  targetValue = 1f,
+                  animationSpec = infiniteRepeatable(tween(1400, easing = LinearEasing)),
+                  label = "ring"
+              )
+
+              LaunchedEffect(weather.city, weather.useF) {
+                  if (weather.city.isBlank()) {
+                      weather.temp = "—"
+                      weather.cond = "Tap to set city"
+                      weather.place = ""
+                      weather.hl = ""
+                      return@LaunchedEffect
+                  }
+                  while (true) {
+                      try {
+                          val r = withContext(Dispatchers.IO) { fetchWeather(weather.city, weather.useF) }
+                          weather.temp = r.temp
+                          weather.cond = r.cond
+                          weather.place = r.place
+                          weather.hl = r.hl
+                      } catch (e: Exception) {
+                          weather.cond = "Weather unavailable"
+                      }
+                      delay(30 * 60 * 1000L)
+                  }
+              }
+
+              LaunchedEffect(apps) {
+                  val pkgs = apps.map { it.pkg }.toSet()
+                  var changed = false
+                  for (i in screens.indices) {
+                      val sc = screens[i]
+                      val kept = sc.items.filter { it.pkg in pkgs }
+                      if (kept.size != sc.items.size) {
+                          screens[i] = sc.copy(items = kept)
+                          changed = true
+                      }
+                  }
+                  if (changed) saveScreens(prefs, screens)
+              }
+
+              var listenerOn by remember { mutableStateOf(isListenerOn(ctx)) }
+              LaunchedEffect(Unit) {
+                  while (true) {
+                      delay(2000)
+                      listenerOn = isListenerOn(ctx)
+                  }
+              }
+
+              val ui = UiEnv(
+                  counts = NotifState.counts,
+                  ringing = NotifState.ringing,
+                  editing = editing,
+                  labels = showLabels,
+                  shine = { shineAnim.value },
+                  wiggle = { wiggleAnim.value },
+                  ring = { ringAnim.value },
+                  onLaunch = { a ->
+                      val n = (counts[a.pkg] ?: 0) + 1
+                      counts[a.pkg] = n
+                      prefs.edit().putInt("c_${a.pkg}", n).apply()
+                      ctx.packageManager.getLaunchIntentForPackage(a.pkg)?.let { ctx.startActivity(it) }
+                  },
+                  onMenu = { m ->
+                      haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                      menu = m
+                  },
+                  onRemove = null
+              )
+
+              val ranked = apps.sortedByDescending { counts[it.pkg] ?: 0 }
+              val recent = remember(apps) { apps.sortedByDescending { it.installed }.take(12) }
+              val cards = listOf("Suggestions" to ranked.take(12), "Recently Added" to recent) +
+                  FOLDERS.map { it to folders[it].orEmpty() }
+              val pager = rememberPagerState { screens.size + 1 }
+
+              BoxWithConstraints(
+                  Modifier
+                      .fillMaxSize()
+                      .background(
+                          Brush.verticalGradient(
+                              listOf(Color(0x66000A1E), Color(0x1A000000), Color(0x8C000A1E))
+                          )
+                      )
+                      .drawBehind {
+                          drawRect(
+                              Brush.radialGradient(
+                                  listOf(NeonCyan.copy(alpha = 0.16f), Color.Transparent),
+                                  center = Offset(0f, 0f),
+                                  radius = size.maxDimension * 0.7f
+                              )
+                          )
+                          drawRect(
+                              Brush.radialGradient(
+                                  listOf(NeonViolet.copy(alpha = 0.18f), Color.Transparent),
+                                  center = Offset(size.width, size.height),
+                                  radius = size.maxDimension * 0.7f
+                              )
+                          )
+                      }
+              ) {
+                  val maxW = constraints.maxWidth.toFloat()
+                  val maxH = constraints.maxHeight.toFloat()
+
+                  Row(
+                      Modifier
+                          .fillMaxSize()
+                          .systemBarsPadding()
+                          .imePadding()
+                          .padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 2.dp)
+                  ) {
+                      Column(Modifier.weight(1f).fillMaxHeight()) {
+                          StatusCluster(Modifier.padding(bottom = 8.dp))
+                          if (!listenerOn) {
+                              GlassPill("Tap to turn on notification badges") {
+                                  ctx.startActivity(
+                                      Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                                          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                  )
+                              }
+                              Spacer(Modifier.height(6.dp))
+                          }
+                          if (editing) {
+                              val cur = pager.currentPage
+                              Row(
+                                  Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                  horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                  verticalAlignment = Alignment.CenterVertically
+                              ) {
+                                  GlassPill("Done", selected = true) { editing = false }
+                                  if (cur < screens.size) GlassPill("+ Apps") { pickerFor = cur }
+                                  GlassPill("+ Screen") {
+                                      screens.add(ScreenData("Screen ${screens.size}", emptyList()))
+                                      saveScreens(prefs, screens)
+                                      scope.launch {
+                                          delay(150)
+                                          pager.animateScrollToPage(screens.size - 1)
+                                      }
+                                  }
+                                  if (cur in 1 until screens.size) {
+                                      GlassPill("Delete screen") {
+                                          screens.removeAt(cur)
+                                          saveScreens(prefs, screens)
+                                      }
+                                  }
+                                  Text("Icons", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+                                  listOf("S", "M", "L").forEachIndexed { i, label ->
+                                      GlassPill(label, selected = iconScale == i) {
+                                          iconScale = i
+                                          prefs.edit().putInt("icon_scale", i).apply()
+                                      }
+                                  }
+                                  GlassPill(if (showLabels) "Labels: on" else "Labels: off") {
+                                      showLabels = !showLabels
+                                      prefs.edit().putBoolean("labels", showLabels).apply()
+                                  }
+                              }
+                              Spacer(Modifier.height(6.dp))
+                          }
+                          HorizontalPager(pager, Modifier.weight(1f)) { page ->
+                              if (page < screens.size) {
+                                  val idx = page
+                                  val sc = screens.getOrNull(idx)
+                                  if (sc != null) {
+                                      val move: (String, Int, Int) -> Unit = { pkg, col, row ->
+                                          if (idx in screens.indices) {
+                                              val cur = screens[idx]
+                                              val me = cur.items.find { it.pkg == pkg }
+                                              if (me != null) {
+                                                  val other = cur.items.find {
+                                                      it.pkg != pkg && it.col(wide) == col && it.row(wide) == row
+                                                  }
+                                                  val oldC = me.col(wide)
+                                                  val oldR = me.row(wide)
+                                                  screens[idx] = cur.copy(
+                                                      items = cur.items.map { p ->
+                                                          when {
+                                                              p.pkg == pkg -> p.moved(wide, col, row)
+                                                              other != null && p.pkg == other.pkg -> p.moved(wide, oldC, oldR)
+                                                              else -> p
+                                                          }
+                                                      }
+                                                  )
+                                                  saveScreens(prefs, screens)
+                                              }
+                                          }
+                                      }
+                                      // "Remove from screen" only unpins the app; it is never uninstalled.
+                                      val removeApp: (AppItem) -> Unit = { a ->
+                                          if (idx in screens.indices) {
+                                              screens[idx] = screens[idx].copy(
+                                                  items = screens[idx].items.filter { it.pkg != a.pkg }
+                                              )
+                                              saveScreens(prefs, screens)
+                                          }
+                                      }
+                                      if (idx == 0) {
+                                          MainScreen(
+                                              sc, apps, wide, iconSize, ui, weather,
+                                              onEditWeather = { weatherEditing = true },
+                                              prefs = prefs, onMove = move, onRemoveApp = removeApp,
+                                              onRows = { gridRows = it }
+                                          )
+                                      } else {
+                                          ScreenPage(
+                                              sc, apps, wide, columns, iconSize, ui,
+                                              onMove = move, onRemoveApp = removeApp,
+                                              onRows = { gridRows = it }, onAdd = { pickerFor = idx }
+                                          )
+                                      }
+                                  }
+                              } else {
+                                  LibraryPage(cards, apps, wide, columns, iconSize, ui) { openFolder = it }
+                              }
+                          }
+                          Row(
+                              Modifier.fillMaxWidth().padding(top = 4.dp),
+                              horizontalArrangement = Arrangement.Center
+                          ) {
+                              repeat(screens.size + 1) { i ->
+                                  Box(
+                                      Modifier
+                                          .padding(3.dp)
+                                          .size(7.dp)
+                                          .clip(CircleShape)
+                                          .background(
+                                              if (pager.currentPage == i) NeonCyan
+                                              else Color.White.copy(alpha = 0.35f)
+                                          )
+                                  )
+                              }
+                          }
+                          // Swipe up twice here to see running apps.
+                          Box(
+                              Modifier
+                                  .fillMaxWidth()
+                                  .height(40.dp)
+                                  .pointerInput(Unit) {
+                                      var total = 0f
+                                      detectVerticalDragGestures(
+                                          onDragStart = { total = 0f },
+                                          onDragEnd = {
+                                              if (total < -40.dp.toPx()) {
+                                                  val now = System.currentTimeMillis()
+                                                  if (now - lastSwipe < 900) {
+                                                      lastSwipe = 0L
+                                                      showRecents = true
+                                                  } else {
+                                                      lastSwipe = now
+                                                  }
+                                              }
+                                          }
+                                      ) { change, dy ->
                                           change.consume()
                                           total += dy
                                       }
@@ -110,7 +1091,320 @@
                           .padding(end = 14.dp, bottom = 52.dp)
                           .size(46.dp)
                           .glass(CircleShape)
-                          .clickable { scope.launch {                                           Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                          .clickable { scope.launch { pager.animateScrollToPage(screens.size) } },
+                      contentAlignment = Alignment.Center
+                  ) { Text("🔍", fontSize = 18.sp) }
+
+                  FloatingButton(maxW, maxH, prefs, "b", "🔔", false, 0)
+                  FloatingButton(maxW, maxH, prefs, "w", "🛠️", true, 1)
+
+                  openFolder?.let { name ->
+                      FolderOverlay(name, cards.find { it.first == name }?.second.orEmpty(), wide, ui) {
+                          openFolder = null
+                      }
+                  }
+                  pickerFor?.let { idx ->
+                      val sc = screens.getOrNull(idx)
+                      if (sc != null) {
+                          AppPicker(
+                              "Add to ${sc.name}", apps, sc.items.map { it.pkg },
+                              onToggle = { a ->
+                                  val cur = screens[idx]
+                                  val has = cur.items.any { it.pkg == a.pkg }
+                                  val items = if (has) {
+                                      cur.items.filter { it.pkg != a.pkg }
+                                  } else {
+                                      val n = nextFree(
+                                          cur.items, false, colsFor(idx, false),
+                                          if (wide) ROWS_N_GUESS else gridRows
+                                      )
+                                      val w = nextFree(
+                                          cur.items, true, colsFor(idx, true),
+                                          if (wide) gridRows else ROWS_W_GUESS
+                                      )
+                                      cur.items + Placed(a.pkg, n.first, n.second, w.first, w.second)
+                                  }
+                                  screens[idx] = cur.copy(items = items)
+                                  saveScreens(prefs, screens)
+                              },
+                              onClose = { pickerFor = null }
+                          )
+                      }
+                  }
+                  if (weatherEditing) {
+                      WeatherEditor(weather) { weatherEditing = false }
+                  }
+                  menu?.let { m ->
+                      AppMenu(
+                          m, maxW, maxH,
+                          onDismiss = { menu = null },
+                          onEdit = { editing = true },
+                          onUninstall = { a ->
+                              ctx.startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:${a.pkg}")))
+                          }
+                      )
+                  }
+                  if (showRecents) {
+                      RecentsOverlay(
+                          ctx, apps, dismissedAt,
+                          onOpen = { a ->
+                              showRecents = false
+                              ui.onLaunch(a)
+                          },
+                          onClose = { showRecents = false }
+                      )
+                  }
+              }
+          }
+
+          // ---------- Pages ----------
+
+          @Composable
+          fun SectionLabel(text: String) {
+              Text(
+                  text.uppercase(),
+                  color = NeonCyan.copy(alpha = 0.9f),
+                  fontSize = 11.sp,
+                  letterSpacing = 2.sp,
+                  fontWeight = FontWeight.Medium
+              )
+          }
+
+          @Composable
+          fun GlassPill(text: String, selected: Boolean = false, onClick: () -> Unit) {
+              Text(
+                  text,
+                  color = Color.White,
+                  fontSize = 13.sp,
+                  modifier = Modifier
+                      .glass(RoundedCornerShape(50))
+                      .then(if (selected) Modifier.background(NeonCyan.copy(alpha = 0.35f)) else Modifier)
+                      .clickable { onClick() }
+                      .padding(horizontal = 16.dp, vertical = 8.dp)
+              )
+          }
+
+          // Home screen laid out like the reference photo: big photo widget, two small widgets, app grid.
+          @Composable
+          fun MainScreen(
+              screen: ScreenData, apps: List<AppItem>, wide: Boolean, iconSize: Dp, ui: UiEnv,
+              weather: WeatherState, onEditWeather: () -> Unit, prefs: SharedPreferences,
+              onMove: (String, Int, Int) -> Unit, onRemoveApp: (AppItem) -> Unit, onRows: (Int) -> Unit
+          ) {
+              val env = ui.copy(onRemove = onRemoveApp)
+              if (wide) {
+                  Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                      PhotoWidget(prefs, Modifier.weight(0.34f).fillMaxHeight())
+                      Column(Modifier.weight(0.66f).fillMaxHeight()) {
+                          Row(
+                              Modifier.fillMaxWidth().height(118.dp),
+                              horizontalArrangement = Arrangement.spacedBy(12.dp)
+                          ) {
+                              WeatherWidget(weather, onEditWeather, Modifier.weight(1f).fillMaxHeight())
+                              NowWidget(Modifier.weight(1f).fillMaxHeight())
+                          }
+                          Spacer(Modifier.height(8.dp))
+                          PlacedGrid(
+                              screen, apps, wide, MAIN_COLS, iconSize, env, onMove, onRows,
+                              Modifier.weight(1f).fillMaxWidth()
+                          )
+                      }
+                  }
+              } else {
+                  Column(Modifier.fillMaxSize()) {
+                      Row(
+                          Modifier.fillMaxWidth().height(104.dp),
+                          horizontalArrangement = Arrangement.spacedBy(12.dp)
+                      ) {
+                          WeatherWidget(weather, onEditWeather, Modifier.weight(1f).fillMaxHeight())
+                          NowWidget(Modifier.weight(1f).fillMaxHeight())
+                      }
+                      Spacer(Modifier.height(8.dp))
+                      PlacedGrid(
+                          screen, apps, wide, MAIN_COLS, iconSize, env, onMove, onRows,
+                          Modifier.weight(1f).fillMaxWidth()
+                      )
+                  }
+              }
+          }
+
+          @Composable
+          fun ScreenPage(
+              screen: ScreenData, apps: List<AppItem>, wide: Boolean, columns: Int, iconSize: Dp, ui: UiEnv,
+              onMove: (String, Int, Int) -> Unit, onRemoveApp: (AppItem) -> Unit, onRows: (Int) -> Unit,
+              onAdd: () -> Unit
+          ) {
+              val env = ui.copy(onRemove = onRemoveApp)
+              Column(Modifier.fillMaxSize()) {
+                  Row(
+                      Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                      verticalAlignment = Alignment.CenterVertically
+                  ) {
+                      SectionLabel(screen.name)
+                      Spacer(Modifier.weight(1f))
+                      GlassPill("+ Apps") { onAdd() }
+                  }
+                  PlacedGrid(
+                      screen, apps, wide, columns, iconSize, env, onMove, onRows,
+                      Modifier.weight(1f).fillMaxWidth()
+                  )
+              }
+          }
+
+          // Cells you can drop apps into. Icon size shrinks if a cell is too narrow.
+          @Composable
+          fun PlacedGrid(
+              screen: ScreenData, apps: List<AppItem>, wide: Boolean, columns: Int, iconSize: Dp, ui: UiEnv,
+              onMove: (String, Int, Int) -> Unit, onRows: (Int) -> Unit, modifier: Modifier = Modifier
+          ) {
+              BoxWithConstraints(modifier) {
+                  val cellW = maxWidth / columns
+                  val tile = minOf(iconSize, cellW - 12.dp)
+                  val cellH = tile + (if (ui.labels) 40.dp else 20.dp)
+                  val rows = maxOf(1, (maxHeight / cellH).toInt())
+                  LaunchedEffect(rows) { onRows(rows) }
+                  if (screen.items.isEmpty()) {
+                      Text(
+                          "Long-press an app and choose Edit Home Screen, then tap + Apps",
+                          color = Color.White.copy(alpha = 0.6f),
+                          fontSize = 13.sp,
+                          modifier = Modifier.align(Alignment.Center).padding(24.dp)
+                      )
+                  }
+                  screen.items.forEach { p ->
+                      val app = apps.find { it.pkg == p.pkg }
+                      if (app != null) {
+                          key(p.pkg) {
+                              PlacedApp(app, p, wide, cellW, cellH, columns, rows, tile, ui, onMove)
+                          }
+                      }
+                  }
+              }
+          }
+
+          // An app sitting in a cell; in edit mode it can be dragged to any other cell.
+          @Composable
+          fun PlacedApp(
+              app: AppItem, p: Placed, wide: Boolean, cellW: Dp, cellH: Dp,
+              columns: Int, rows: Int, iconSize: Dp, ui: UiEnv,
+              onMove: (String, Int, Int) -> Unit
+          ) {
+              val d = LocalDensity.current
+              var dx by remember { mutableFloatStateOf(0f) }
+              var dy by remember { mutableFloatStateOf(0f) }
+              var dragging by remember { mutableStateOf(false) }
+              val col = p.col(wide).coerceIn(0, columns - 1)
+              val row = p.row(wide).coerceIn(0, rows - 1)
+              val cw = with(d) { cellW.toPx() }
+              val ch = with(d) { cellH.toPx() }
+
+              Box(
+                  Modifier
+                      .offset { IntOffset((col * cw + dx).roundToInt(), (row * ch + dy).roundToInt()) }
+                      .size(cellW, cellH)
+                      .zIndex(if (dragging) 10f else 0f)
+                      .then(
+                          if (ui.editing) {
+                              Modifier.pointerInput(p.pkg, col, row, cw, ch) {
+                                  detectDragGestures(
+                                      onDragStart = { dragging = true },
+                                      onDragEnd = {
+                                          val nc = ((col * cw + dx + cw / 2f) / cw).toInt().coerceIn(0, columns - 1)
+                                          val nr = ((row * ch + dy + ch / 2f) / ch).toInt().coerceIn(0, rows - 1)
+                                          dx = 0f
+                                          dy = 0f
+                                          dragging = false
+                                          onMove(p.pkg, nc, nr)
+                                      },
+                                      onDragCancel = {
+                                          dx = 0f
+                                          dy = 0f
+                                          dragging = false
+                                      }
+                                  ) { change, drag ->
+                                      change.consume()
+                                      dx += drag.x
+                                      dy += drag.y
+                                  }
+                              }
+                          } else Modifier
+                      ),
+                  contentAlignment = Alignment.TopCenter
+              ) {
+                  AppIcon(app, iconSize, ui)
+              }
+          }
+
+          @Composable
+          fun LibraryPage(
+              cards: List<Pair<String, List<AppItem>>>, apps: List<AppItem>, wide: Boolean,
+              columns: Int, iconSize: Dp, ui: UiEnv, onOpen: (String) -> Unit
+          ) {
+              var query by remember { mutableStateOf("") }
+              Column(Modifier.fillMaxSize()) {
+                  Row(
+                      Modifier
+                          .fillMaxWidth()
+                          .glass(RoundedCornerShape(50))
+                          .padding(horizontal = 16.dp, vertical = 12.dp),
+                      verticalAlignment = Alignment.CenterVertically
+                  ) {
+                      Text("🔍", fontSize = 16.sp)
+                      Spacer(Modifier.width(10.dp))
+                      Box(Modifier.weight(1f)) {
+                          if (query.isEmpty()) {
+                              Text("App Library", color = Color.White.copy(alpha = 0.6f), fontSize = 17.sp)
+                          }
+                          BasicTextField(
+                              value = query,
+                              onValueChange = { query = it },
+                              singleLine = true,
+                              textStyle = TextStyle(color = Color.White, fontSize = 17.sp),
+                              cursorBrush = SolidColor(NeonCyan),
+                              modifier = Modifier.fillMaxWidth()
+                          )
+                      }
+                      if (query.isNotEmpty()) {
+                          Text(
+                              "✕", color = Color.White.copy(alpha = 0.8f), fontSize = 16.sp,
+                              modifier = Modifier.clickable { query = "" }.padding(start = 8.dp)
+                          )
+                      }
+                  }
+                  Spacer(Modifier.height(12.dp))
+                  if (query.isNotBlank()) {
+                      val results = apps.filter { it.label.contains(query.trim(), ignoreCase = true) }
+                      if (results.isEmpty()) {
+                          Text("No apps found", color = Color.White.copy(alpha = 0.6f), fontSize = 14.sp)
+                      } else {
+                          AppGrid(results, columns, iconSize, ui.copy(labels = true), Modifier.weight(1f))
+                      }
+                  } else {
+                      LazyVerticalGrid(
+                          columns = GridCells.Fixed(if (wide) 4 else 2),
+                          modifier = Modifier.weight(1f),
+                          horizontalArrangement = Arrangement.spacedBy(12.dp),
+                          verticalArrangement = Arrangement.spacedBy(12.dp)
+                      ) {
+                          items(cards) { (name, list) ->
+                              val active = list.any { it.pkg in ui.counts || it.pkg in ui.ringing }
+                              val total = list.sumOf { ui.counts[it.pkg] ?: 0 }
+                              Box(
+                                  Modifier
+                                      .height(150.dp)
+                                      .glass(RoundedCornerShape(26.dp))
+                                      .shineEffect(active, ui.shine)
+                                      .clickable { onOpen(name) }
+                              ) {
+                                  Column(Modifier.padding(14.dp)) {
+                                      Text(name, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                                      Text(
+                                          "${list.size} apps",
+                                          color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp
+                                      )
+                                      Spacer(Modifier.height(8.dp))
+                                      list.take(4).chunked(2).forEach { row ->
+                                          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                               row.forEach { a ->
                                                   Image(
                                                       a.icon, null,
@@ -254,7 +1548,355 @@
                   }
               }
           }
-          FontWeight.SemiBold,
+
+          @Composable
+          fun CountBadge(n: Int, modifier: Modifier = Modifier) {
+              Box(
+                  modifier
+                      .height(20.dp)
+                      .widthIn(min = 20.dp)
+                      .clip(RoundedCornerShape(10.dp))
+                      .background(Danger)
+                      .border(1.5.dp, Color.White.copy(alpha = 0.9f), RoundedCornerShape(10.dp))
+                      .padding(horizontal = 5.dp),
+                  contentAlignment = Alignment.Center
+              ) {
+                  Text(
+                      if (n > 99) "99+" else "$n",
+                      color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1
+                  )
+              }
+          }
+
+          @Composable
+          fun AppTile(app: AppItem, tileSize: Dp, ui: UiEnv, dockStyle: Boolean = false) {
+              val cur = rememberUpdatedState(ui)
+              var pressed by remember { mutableStateOf(false) }
+              var origin by remember { mutableStateOf(Offset.Zero) }
+              var boxSize by remember { mutableStateOf(IntSize.Zero) }
+              val scale = animateFloatAsState(
+                  if (pressed) 0.86f else 1f,
+                  spring(dampingRatio = 0.45f, stiffness = 400f),
+                  label = "press"
+              )
+              val count = ui.counts[app.pkg] ?: 0
+              val ringing = app.pkg in ui.ringing
+              val active = count > 0 || ringing
+              val sign = if (app.pkg.hashCode() % 2 == 0) 1f else -1f
+              val shape = RoundedCornerShape(tileSize * 0.225f) // iOS-style squircle
+
+              Box(
+                  Modifier
+                      .onGloballyPositioned {
+                          origin = it.positionInRoot()
+                          boxSize = it.size
+                      }
+                      .graphicsLayer {
+                          val u = cur.value
+                          rotationZ = when {
+                              u.editing -> u.wiggle() * 2.2f * sign
+                              ringing -> ringRotation(u.ring())
+                              else -> 0f
+                          }
+                          scaleX = scale.value
+                          scaleY = scale.value
+                      }
+                      .pointerInput(app.pkg) {
+                          detectTapGestures(
+                              onPress = {
+                                  pressed = true
+                                  tryAwaitRelease()
+                                  pressed = false
+                              },
+                              onTap = { if (!cur.value.editing) cur.value.onLaunch(app) },
+                              onLongPress = {
+                                  val u = cur.value
+                                  if (!u.editing) {
+                                      val remove = u.onRemove
+                                      u.onMenu(
+                                          MenuState(
+                                              app,
+                                              Offset(
+                                                  origin.x + boxSize.width / 2f,
+                                                  origin.y + boxSize.height.toFloat()
+                                              ),
+                                              remove?.let { r -> { r(app) } }
+                                          )
+                                      )
+                                  }
+                              }
+                          )
+                      }
+                      .padding(6.dp)
+              ) {
+                  Box(
+                      Modifier
+                          .size(tileSize)
+                          .shadow(4.dp, shape)
+                          .shineEffect(active, ui.shine)
+                          .ringGlow(ringing, ui.ring)
+                  ) {
+                      Image(app.icon, app.label, Modifier.fillMaxSize())
+                  }
+
+                  if (!ui.editing && count > 0) {
+                      CountBadge(count, Modifier.align(Alignment.TopEnd).offset(x = 6.dp, y = (-6).dp))
+                  }
+              }
+          }
+
+          // iOS-style long-press menu.
+          @Composable
+          fun AppMenu(
+              m: MenuState, maxW: Float, maxH: Float,
+              onDismiss: () -> Unit, onEdit: () -> Unit, onUninstall: (AppItem) -> Unit
+          ) {
+              val d = LocalDensity.current
+              val canRemove = m.onRemove != null
+              val rowsShown = 1 + (if (canRemove) 1 else 0) + (if (m.app.removable) 1 else 0)
+              val cardW = with(d) { 240.dp.toPx() }
+              val cardH = with(d) { (52.dp * rowsShown + 12.dp).toPx() }
+              val pad = with(d) { 8.dp.toPx() }
+              val x = (m.anchor.x - cardW / 2f).coerceIn(pad, maxOf(pad, maxW - cardW - pad))
+              var y = m.anchor.y + pad
+              if (y + cardH > maxH - pad) y = (m.anchor.y - cardH - with(d) { 70.dp.toPx() }).coerceAtLeast(pad)
+
+              Box(
+                  Modifier
+                      .fillMaxSize()
+                      .background(Color.Black.copy(alpha = 0.3f))
+                      .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {
+                          onDismiss()
+                      }
+              ) {
+                  Column(
+                      Modifier
+                          .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
+                          .width(240.dp)
+                          .glass(RoundedCornerShape(22.dp))
+                          .background(Color(0xFF0B1226).copy(alpha = 0.78f))
+                          .padding(vertical = 6.dp)
+                  ) {
+                      var first = true
+                      if (canRemove) {
+                          MenuItem("⊖", "Remove from Screen", Danger) {
+                              m.onRemove?.invoke()
+                              onDismiss()
+                          }
+                          first = false
+                      }
+                      if (m.app.removable) {
+                          if (!first) MenuDivider()
+                          MenuItem("🗑", "Uninstall", Danger) {
+                              onUninstall(m.app)
+                              onDismiss()
+                          }
+                          first = false
+                      }
+                      if (!first) MenuDivider()
+                      MenuItem("▦", "Edit Home Screen", Color.White) {
+                          onEdit()
+                          onDismiss()
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun MenuDivider() {
+              Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.12f)))
+          }
+
+          @Composable
+          fun MenuItem(glyph: String, text: String, color: Color, onClick: () -> Unit) {
+              Row(
+                  Modifier
+                      .fillMaxWidth()
+                      .clickable { onClick() }
+                      .padding(horizontal = 18.dp, vertical = 14.dp),
+                  verticalAlignment = Alignment.CenterVertically
+              ) {
+                  Text(glyph, color = color, fontSize = 18.sp)
+                  Spacer(Modifier.width(14.dp))
+                  Text(text, color = color, fontSize = 16.sp)
+              }
+          }
+
+          @Composable
+          fun SideDock(apps: List<AppItem>, tileSize: Dp, ui: UiEnv) {
+              Box(Modifier.fillMaxHeight(), contentAlignment = Alignment.CenterEnd) {
+                  Column(
+                      Modifier.glass(RoundedCornerShape(30.dp)).padding(4.dp),
+                      verticalArrangement = Arrangement.spacedBy(2.dp)
+                  ) {
+                      apps.forEach { app -> AppTile(app, tileSize, ui, dockStyle = true) }
+                  }
+              }
+          }
+
+          // ---------- Widgets ----------
+
+          @Composable
+          fun WeatherWidget(weather: WeatherState, onEdit: () -> Unit, modifier: Modifier) {
+              val shape = RoundedCornerShape(24.dp)
+              Box(
+                  modifier
+                      .clip(shape)
+                      .background(Brush.verticalGradient(listOf(Color(0xFF5A9BEA), Color(0xFF2F63B8))))
+                      .border(1.dp, Color.White.copy(alpha = 0.35f), shape)
+                      .clickable { onEdit() }
+                      .padding(12.dp)
+              ) {
+                  Column(Modifier.fillMaxSize()) {
+                      Text(
+                          if (weather.place.isBlank()) "Weather" else weather.place,
+                          color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1
+                      )
+                      Text(weather.temp, color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.Light)
+                      Spacer(Modifier.weight(1f))
+                      Text(weather.cond, color = Color.White.copy(alpha = 0.92f), fontSize = 12.sp, maxLines = 1)
+                      if (weather.hl.isNotBlank()) {
+                          Text(weather.hl, color = Color.White.copy(alpha = 0.8f), fontSize = 11.sp, maxLines = 1)
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun NowWidget(modifier: Modifier) {
+              var now by remember { mutableStateOf(System.currentTimeMillis()) }
+              LaunchedEffect(Unit) {
+                  while (true) {
+                      now = System.currentTimeMillis()
+                      delay(15_000)
+                  }
+              }
+              val date = Date(now)
+              Box(modifier.glass(RoundedCornerShape(24.dp)).padding(12.dp)) {
+                  Column(Modifier.fillMaxSize()) {
+                      Text(
+                          SimpleDateFormat("EEE", Locale.getDefault()).format(date).uppercase(),
+                          color = Danger, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                      )
+                      Text(
+                          SimpleDateFormat("d", Locale.getDefault()).format(date),
+                          color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Light
+                      )
+                      Spacer(Modifier.weight(1f))
+                      Text(
+                          SimpleDateFormat("h:mm a", Locale.getDefault()).format(date),
+                          color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp
+                      )
+                  }
+              }
+          }
+
+          suspend fun loadPhoto(ctx: Context, uri: Uri): ImageBitmap? = withContext(Dispatchers.IO) {
+              try {
+                  val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                  ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+                  var sample = 1
+                  while (bounds.outWidth / sample > 1400 || bounds.outHeight / sample > 1400) sample *= 2
+                  val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+                  ctx.contentResolver.openInputStream(uri)?.use {
+                      BitmapFactory.decodeStream(it, null, opts)?.asImageBitmap()
+                  }
+              } catch (e: Exception) {
+                  null
+              }
+          }
+
+          // Big photo card. Tap to pick (or change) the photo.
+          @Composable
+          fun PhotoWidget(prefs: SharedPreferences, modifier: Modifier) {
+              val ctx = LocalContext.current
+              var uri by remember { mutableStateOf(prefs.getString("photo", null)) }
+              var bmp by remember { mutableStateOf<ImageBitmap?>(null) }
+              LaunchedEffect(uri) { bmp = uri?.let { loadPhoto(ctx, Uri.parse(it)) } }
+              val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u ->
+                  if (u != null) {
+                      try {
+                          ctx.contentResolver.takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                      } catch (e: Exception) {
+                      }
+                      prefs.edit().putString("photo", u.toString()).apply()
+                      uri = u.toString()
+                  }
+              }
+              val shape = RoundedCornerShape(28.dp)
+              Box(
+                  modifier
+                      .glass(shape)
+                      .clickable { picker.launch(arrayOf("image/*")) }
+              ) {
+                  val b = bmp
+                  if (b != null) {
+                      Image(b, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                  } else {
+                      Column(
+                          Modifier.align(Alignment.Center),
+                          horizontalAlignment = Alignment.CenterHorizontally
+                      ) {
+                          Text("🖼️", fontSize = 34.sp)
+                          Spacer(Modifier.height(6.dp))
+                          Text("Tap to choose a photo", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
+                      }
+                  }
+                  Box(
+                      Modifier
+                          .align(Alignment.BottomStart)
+                          .fillMaxWidth()
+                          .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f))))
+                          .padding(16.dp)
+                  ) {
+                      Column {
+                          Text("Memories", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                          Text(
+                              SimpleDateFormat("MMMM d, yyyy", Locale.getDefault()).format(Date()).uppercase(),
+                              color = Color.White.copy(alpha = 0.8f), fontSize = 10.sp, letterSpacing = 1.sp
+                          )
+                      }
+                  }
+              }
+          }
+
+          // Replaces the phone's top bar: time + one ring showing battery (arc), Wi-Fi (center), Bluetooth (dots).
+          @Composable
+          fun StatusCluster(modifier: Modifier = Modifier) {
+              val ctx = LocalContext.current
+              var time by remember { mutableStateOf("") }
+              var battery by remember { mutableIntStateOf(100) }
+              var charging by remember { mutableStateOf(false) }
+              var wifi by remember { mutableStateOf(false) }
+              var bt by remember { mutableStateOf(false) }
+              LaunchedEffect(Unit) {
+                  val bm = ctx.getSystemService(BatteryManager::class.java)
+                  val cm = ctx.getSystemService(ConnectivityManager::class.java)
+                  val fmt = SimpleDateFormat("h:mm", Locale.getDefault())
+                  while (true) {
+                      time = fmt.format(Date())
+                      try {
+                          battery = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                          charging = bm.isCharging
+                      } catch (e: Exception) {
+                      }
+                      wifi = try {
+                          cm.getNetworkCapabilities(cm.activeNetwork)
+                              ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+                      } catch (e: Exception) {
+                          false
+                      }
+                      bt = try {
+                          Settings.Global.getInt(ctx.contentResolver, "bluetooth_on", 0) == 1
+                      } catch (e: Exception) {
+                          false
+                      }
+                      delay(5000)
+                  }
+              }
+              Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+                  Text(
+                      time, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
                       modifier = Modifier.clickable { pullShade(ctx, false) }.padding(end = 10.dp)
                   )
                   StatusRing(
@@ -376,7 +2018,317 @@
                                   }
                               )
                           }
-                      }                          if (type == 1 || (type == 0 && !chrono)) ringing.add(pkg)
+                      }
+                      Text(
+                          "Swipe a card up to close the app",
+                          color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp,
+                          modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 90.dp)
+                      )
+                  }
+              }
+          }
+
+          @Composable
+          fun RecentCard(r: RecentApp, cardH: Dp, onOpen: () -> Unit, onDismiss: () -> Unit) {
+              val scope = rememberCoroutineScope()
+              var offY by remember { mutableFloatStateOf(0f) }
+              Column(
+                  Modifier
+                      .graphicsLayer {
+                          translationY = offY
+                          alpha = (1f + offY / 900f).coerceIn(0f, 1f)
+                      }
+                      .pointerInput(r.app.pkg) {
+                          detectVerticalDragGestures(
+                              onDragEnd = {
+                                  if (offY < -120.dp.toPx()) {
+                                      scope.launch {
+                                          animate(offY, -2200f, animationSpec = tween(200)) { v, _ -> offY = v }
+                                          onDismiss()
+                                      }
+                                  } else {
+                                      scope.launch {
+                                          animate(offY, 0f, animationSpec = spring()) { v, _ -> offY = v }
+                                      }
+                                  }
+                              },
+                              onDragCancel = {
+                                  scope.launch {
+                                      animate(offY, 0f, animationSpec = spring()) { v, _ -> offY = v }
+                                  }
+                              }
+                          ) { change, dy ->
+                              change.consume()
+                              offY = minOf(0f, offY + dy)
+                          }
+                      }
+              ) {
+                  Row(
+                      Modifier.padding(start = 6.dp, bottom = 8.dp),
+                      verticalAlignment = Alignment.CenterVertically
+                  ) {
+                      Image(r.app.icon, null, Modifier.size(24.dp).clip(RoundedCornerShape(6.dp)))
+                      Spacer(Modifier.width(8.dp))
+                      Text(r.app.label, color = Color.White, fontSize = 14.sp, maxLines = 1)
+                  }
+                  Box(
+                      Modifier
+                          .fillMaxWidth()
+                          .height(cardH)
+                          .glass(RoundedCornerShape(28.dp))
+                          .background(Color(0xFF0B1226).copy(alpha = 0.55f))
+                          .clickable { onOpen() },
+                      contentAlignment = Alignment.Center
+                  ) {
+                      Image(
+                          r.app.icon, r.app.label,
+                          Modifier.size(96.dp).clip(RoundedCornerShape(22.dp))
+                      )
+                  }
+              }
+          }
+
+          @Composable
+          fun WeatherEditor(weather: WeatherState, onClose: () -> Unit) {
+              var city by remember { mutableStateOf(weather.city) }
+              var f by remember { mutableStateOf(weather.useF) }
+              Box(
+                  Modifier
+                      .fillMaxSize()
+                      .background(Color.Black.copy(alpha = 0.6f))
+                      .clickable { onClose() },
+                  contentAlignment = Alignment.Center
+              ) {
+                  Column(
+                      Modifier
+                          .fillMaxWidth(0.9f)
+                          .widthIn(max = 460.dp)
+                          .glass(RoundedCornerShape(30.dp))
+                          .background(Color(0xFF0B1226).copy(alpha = 0.78f))
+                          .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {}
+                          .padding(20.dp),
+                      verticalArrangement = Arrangement.spacedBy(14.dp)
+                  ) {
+                      SectionLabel("Edit weather")
+                      Box(
+                          Modifier
+                              .fillMaxWidth()
+                              .glass(RoundedCornerShape(16.dp))
+                              .padding(horizontal = 14.dp, vertical = 12.dp)
+                      ) {
+                          if (city.isEmpty()) {
+                              Text("City name", color = Color.White.copy(alpha = 0.5f), fontSize = 18.sp)
+                          }
+                          BasicTextField(
+                              value = city,
+                              onValueChange = { city = it },
+                              singleLine = true,
+                              textStyle = TextStyle(color = Color.White, fontSize = 18.sp),
+                              cursorBrush = SolidColor(NeonCyan),
+                              modifier = Modifier.fillMaxWidth()
+                          )
+                      }
+                      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                          GlassPill("°F", selected = f) { f = true }
+                          GlassPill("°C", selected = !f) { f = false }
+                      }
+                      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                          GlassPill("Cancel") { onClose() }
+                          GlassPill("Save", selected = true) {
+                              weather.update(city, f)
+                              onClose()
+                          }
+                      }
+                  }
+              }
+          }
+
+          // Draggable round buttons. quick=false opens notifications, quick=true opens the control panel.
+          @Composable
+          fun FloatingButton(
+              maxW: Float, maxH: Float, prefs: SharedPreferences,
+              key: String, icon: String, quick: Boolean, slot: Int
+          ) {
+              val ctx = LocalContext.current
+              val d = LocalDensity.current
+              val sizePx = with(d) { 52.dp.toPx() }
+              val defX = maxW - sizePx - with(d) { 16.dp.toPx() }
+              val defY = (maxH / 2f + with(d) { 150.dp.toPx() } + slot * with(d) { 60.dp.toPx() })
+                  .coerceAtMost(maxH - sizePx - with(d) { 100.dp.toPx() })
+              var x by remember { mutableFloatStateOf(prefs.getFloat(key + "x", defX)) }
+              var y by remember { mutableFloatStateOf(prefs.getFloat(key + "y", defY)) }
+
+              Box(
+                  Modifier
+                      .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
+                      .size(52.dp)
+                      .glass(CircleShape)
+                      .pointerInput(Unit) {
+                          detectTapGestures(onTap = { pullShade(ctx, quick) })
+                      }
+                      .pointerInput(maxW, maxH) {
+                          detectDragGestures(
+                              onDragEnd = {
+                                  prefs.edit().putFloat(key + "x", x).putFloat(key + "y", y).apply()
+                              }
+                          ) { change, drag ->
+                              change.consume()
+                              x = (x + drag.x).coerceIn(0f, maxW - sizePx)
+                              y = (y + drag.y).coerceIn(0f, maxH - sizePx)
+                          }
+                      },
+                  contentAlignment = Alignment.Center
+              ) {
+                  Text(icon, fontSize = 20.sp)
+              }
+          }
+          EOF_FILE
+          cat > app/src/main/java/com/example/foldlauncher/Services.kt <<'EOF_FILE'
+          package com.example.foldlauncher
+
+          import android.accessibilityservice.AccessibilityService
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.media.AudioManager
+          import android.media.ToneGenerator
+          import android.os.BatteryManager
+          import android.os.Handler
+          import android.os.Looper
+          import android.service.notification.NotificationListenerService
+          import android.service.notification.StatusBarNotification
+          import android.telecom.TelecomManager
+          import android.view.accessibility.AccessibilityEvent
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.setValue
+          import androidx.core.content.ContextCompat
+
+          // Live notification info shared with the launcher UI.
+          object NotifState {
+              var counts by mutableStateOf<Map<String, Int>>(emptyMap())   // package -> badge number
+              var ringing by mutableStateOf<Set<String>>(emptySet())       // packages with an incoming call
+          }
+
+          class NotifService : NotificationListenerService() {
+              private val handler = Handler(Looper.getMainLooper())
+              private var alerted = false
+              private var beeps = 0
+              private var tone: ToneGenerator? = null
+
+              private val beeper = object : Runnable {
+                  override fun run() {
+                      // Stops after ~27 seconds, when the launcher is opened, or when charging starts.
+                      if (silenceRequested || beeps >= 45) {
+                          stopBeeping()
+                          return
+                      }
+                      tone?.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 350)
+                      beeps++
+                      handler.postDelayed(this, 600)
+                  }
+              }
+
+              private val batteryReceiver = object : BroadcastReceiver() {
+                  override fun onReceive(c: Context, i: Intent) {
+                      val level = i.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                      val scale = i.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
+                      if (level < 0 || scale <= 0) return
+                      val pct = level * 100 / scale
+                      val status = i.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+                      val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                          status == BatteryManager.BATTERY_STATUS_FULL
+                      if (charging || pct > 10) {
+                          alerted = false
+                          stopBeeping()
+                      } else if (!alerted) {
+                          alerted = true
+                          postBatteryNotification(pct)
+                          startBeeping()
+                      }
+                  }
+              }
+
+              override fun onCreate() {
+                  super.onCreate()
+                  ContextCompat.registerReceiver(
+                      this, batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+                      ContextCompat.RECEIVER_NOT_EXPORTED
+                  )
+              }
+
+              override fun onDestroy() {
+                  try { unregisterReceiver(batteryReceiver) } catch (e: Exception) {}
+                  stopBeeping()
+                  super.onDestroy()
+              }
+
+              private fun startBeeping() {
+                  stopBeeping()
+                  silenceRequested = false
+                  beeps = 0
+                  tone = try {
+                      ToneGenerator(AudioManager.STREAM_ALARM, 100)
+                  } catch (e: RuntimeException) {
+                      null
+                  }
+                  handler.post(beeper)
+              }
+
+              private fun stopBeeping() {
+                  handler.removeCallbacks(beeper)
+                  tone?.release()
+                  tone = null
+              }
+
+              private fun postBatteryNotification(pct: Int) {
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.createNotificationChannel(
+                      NotificationChannel("battery", "Battery alert", NotificationManager.IMPORTANCE_HIGH)
+                  )
+                  val pi = PendingIntent.getActivity(
+                      this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+                  )
+                  nm.notify(
+                      1,
+                      Notification.Builder(this, "battery")
+                          .setSmallIcon(android.R.drawable.ic_lock_idle_low_battery)
+                          .setContentTitle("Battery at $pct%")
+                          .setContentText("Plug in your charger.")
+                          .setContentIntent(pi)
+                          .setAutoCancel(true)
+                          .build()
+                  )
+              }
+
+              private fun refresh() {
+                  val dialer = try {
+                      getSystemService(TelecomManager::class.java)?.defaultDialerPackage
+                  } catch (e: Exception) {
+                      null
+                  }
+                  val counts = HashMap<String, Int>()
+                  val ringing = HashSet<String>()
+                  val list = (try { activeNotifications } catch (e: Exception) { null })
+                      ?: emptyArray<StatusBarNotification>()
+                  for (sbn in list) {
+                      val n = sbn.notification
+                      val cat = n.category
+                      val isCall = cat == "call" || cat == "missed_call" ||
+                          sbn.packageName.contains("incallui") || sbn.packageName.contains("telecom")
+                      // Call notifications are credited to the phone app's icon.
+                      val pkg = if (isCall && dialer != null) dialer else sbn.packageName
+                      if (cat == "call") {
+                          val extras = n.extras
+                          val chrono = extras?.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER, false) ?: false
+                          val type = extras?.getInt("android.callType", 0) ?: 0
+                          // Incoming (not yet answered): call type 1, or no running timer.
+                          if (type == 1 || (type == 0 && !chrono)) ringing.add(pkg)
                           continue
                       }
                       if (sbn.isOngoing) continue
