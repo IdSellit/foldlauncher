@@ -11,8 +11,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Unzip project
-        run: run: unzip -q "$(ls apple-duo-*.zip | sort -V | tail -1)" -d proj
+      - name: Unzip newest project zip
+        run: |
+          ZIP=$(ls apple-duo-*.zip | sort -V | tail -1)
+          echo "Using $ZIP"
+          unzip -q "$ZIP" -d proj
 
       - uses: actions/setup-java@v4
         with:
