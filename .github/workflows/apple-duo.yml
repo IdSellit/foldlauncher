@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Unzip project
-        run: unzip -q apple-duo-phase2.zip -d proj
+        run: run: unzip -q "$(ls apple-duo-*.zip | sort -V | tail -1)" -d proj
 
       - uses: actions/setup-java@v4
         with:
